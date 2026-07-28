@@ -1,0 +1,49 @@
+# Environment variables
+.env
+
+# Virtual environment
+chatbot_env/
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Uploads
+uploads/
+
+# Vector database/store
+vector_store/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Pytest
+.pytest_cache/
+
+# Mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/

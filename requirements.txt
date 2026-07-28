@@ -1,0 +1,20 @@
+Flask
+langchain
+langchain-community
+langchain-ollama
+faiss-cpu
+numpy
+python-dotenv
+pypdf
+requests
+gunicorn
+tiktoken
+
+# Multi-format document ingestion
+python-docx
+openpyxl
+xlrd
+striprtf
+
+# Observability
+langsmith>=0.1.0

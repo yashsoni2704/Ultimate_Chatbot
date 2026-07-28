@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocMind — Admin Panel</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='admin_style.css') }}">
+</head>
+<body>
+
+    <!-- Background orbs -->
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+    <div class="bg-orb orb-3"></div>
+
+    <div class="admin-layout">
+
+        <!-- ═══════════════════════════════════
+             SIDEBAR
+        ═══════════════════════════════════ -->
+        <aside class="admin-sidebar">
+
+            <!-- Brand -->
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                </div>
+                <div class="brand-text">
+                    <h1>DocMind</h1>
+                    <span class="brand-badge">Admin Panel</span>
+                </div>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Stats -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <span class="stat-value" id="statTotal">—</span>
+                    <span class="stat-label">Documents</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-value" id="statChunks">—</span>
+                    <span class="stat-label">Total Chunks</span>
+                </div>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Supported formats -->
+            <div class="formats-section">
+                <p class="section-label">Supported Formats</p>
+                <div class="format-chips">
+                    <span class="chip chip-pdf">PDF</span>
+                    <span class="chip chip-word">DOCX</span>
+                    <span class="chip chip-word">DOC</span>
+                    <span class="chip chip-excel">XLSX</span>
+                    <span class="chip chip-excel">XLS</span>
+                    <span class="chip chip-ppt">PPTX</span>
+                    <span class="chip chip-ppt">PPT</span>
+                    <span class="chip chip-csv">CSV</span>
+                    <span class="chip chip-txt">TXT</span>
+                    <span class="chip chip-rtf">RTF</span>
+                </div>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Info -->
+            <div class="info-section">
+                <p class="section-label">Notes</p>
+                <ul class="info-list">
+                    <li>Duplicate files are skipped automatically</li>
+                    <li>Multiple files can be uploaded one by one</li>
+                    <li>Deleted docs are removed from the registry</li>
+                    <li>Chat users see changes immediately</li>
+                </ul>
+            </div>
+
+            <div class="sidebar-footer">
+                <span>DocMind Admin · Port 5001</span>
+            </div>
+
+        </aside>
+
+        <!-- ═══════════════════════════════════
+             MAIN CONTENT
+        ═══════════════════════════════════ -->
+        <main class="admin-main">
+
+            <!-- Page header -->
+            <header class="page-header">
+                <div class="page-header-left">
+                    <h2>Knowledge Base Manager</h2>
+                    <p class="page-subtitle">Upload documents to expand what the chatbot knows</p>
+                </div>
+                <div class="page-header-right">
+                    <div class="live-badge">
+                        <span class="live-dot"></span>
+                        <span>Live</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- ── Upload Card ── -->
+            <section class="upload-card">
+                <div class="upload-card-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <h3>Upload Document</h3>
+                </div>
+
+                <!-- Drop zone -->
+                <div id="dropZone" class="drop-zone">
+                    <div class="drop-zone-inner">
+                        <div class="drop-icon-wrap" id="dropIconWrap">
+                            <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </div>
+                        <p class="drop-title">Drag &amp; drop your file here</p>
+                        <p class="drop-sub">PDF, DOCX, XLSX, PPTX, CSV, TXT, RTF — or click to browse</p>
+                        <input type="file" id="fileInput"
+                               accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.rtf"
+                               style="display:none;">
+                        <button class="browse-btn" id="browseBtn">Browse File</button>
+                    </div>
+                </div>
+
+                <!-- Selected file preview -->
+                <div id="filePreview" class="file-preview" style="display:none;">
+                    <div class="file-preview-icon" id="fileTypeIcon">
+                        <!-- injected by JS -->
+                    </div>
+                    <div class="file-preview-body">
+                        <p class="file-preview-name" id="previewName">—</p>
+                        <div class="file-preview-meta">
+                            <span class="file-type-badge" id="fileTypeBadge">—</span>
+                            <span class="file-preview-size" id="previewSize">—</span>
+                        </div>
+                    </div>
+                    <button class="remove-btn" id="removeFileBtn" title="Remove">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Upload button -->
+                <button class="upload-btn" id="uploadBtn" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <span id="uploadBtnText">Select a file to upload</span>
+                </button>
+
+                <!-- Progress bar -->
+                <div id="progressWrap" class="progress-wrap" style="display:none;">
+                    <div class="progress-bar-track">
+                        <div class="progress-bar-fill" id="progressBar"></div>
+                    </div>
+                    <span class="progress-label" id="progressLabel">Processing…</span>
+                </div>
+
+                <!-- Status message -->
+                <div id="uploadStatus" class="upload-status" style="display:none;"></div>
+            </section>
+
+            <!-- ── Knowledge Base Table ── -->
+            <section class="kb-section">
+                <div class="kb-section-header">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                        </svg>
+                        Ingested Documents
+                    </h3>
+                    <button class="refresh-btn" id="refreshBtn" title="Refresh list">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+
+                <!-- Loading -->
+                <div id="kbLoading" class="kb-loading">
+                    <div class="kb-spinner"></div>
+                    <span>Loading knowledge base…</span>
+                </div>
+
+                <!-- Empty -->
+                <div id="kbEmpty" class="kb-empty" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M9 13h6m-3-3v6m-9 1V7a2 2 0 0 1 2-2h6l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                    </svg>
+                    <p>No documents ingested yet</p>
+                    <p class="kb-empty-sub">Upload your first document above to get started</p>
+                </div>
+
+                <!-- Table -->
+                <div id="kbTableWrap" class="kb-table-wrap" style="display:none;">
+                    <table class="kb-table">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Type</th>
+                                <th>Chunks</th>
+                                <th>Ingested</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="kbTableBody"></tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Confirm delete modal -->
+    <div id="deleteModal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <div class="modal-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6l-1 14H6L5 6"/>
+                    <path d="M10 11v6M14 11v6"/>
+                    <path d="M9 6V4h6v2"/>
+                </svg>
+            </div>
+            <h3>Remove Document</h3>
+            <p>Are you sure you want to remove <strong id="deleteFileName">—</strong> from the knowledge base?</p>
+            <p class="modal-note">This cannot be undone. The file will be deleted.</p>
+            <div class="modal-actions">
+                <button class="modal-cancel" id="modalCancel">Cancel</button>
+                <button class="modal-confirm" id="modalConfirm">Remove</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='admin_script.js') }}"></script>
+</body>
+</html>
