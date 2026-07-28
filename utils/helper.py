@@ -31,7 +31,7 @@ def ensure_directories():
     """
 
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-    os.makedirs(Config.VECTOR_DB_PATH, exist_ok=True)
+    os.makedirs(Config.QDRANT_PATH, exist_ok=True)
 
 
 def clean_filename(filename):

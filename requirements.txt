@@ -16,5 +16,9 @@ openpyxl
 xlrd
 striprtf
 
+# Vector store
+qdrant-client
+langchain-qdrant
+
 # Observability
 langsmith>=0.1.0

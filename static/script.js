@@ -25,7 +25,38 @@ let msgCounter = 0;
 window.addEventListener("load", () => {
     questionInput.focus();
     loadKnowledgeBase();
+    startKbPolling();
 });
+
+// ===============================
+// Knowledge Base Polling
+// ===============================
+
+let _kbPollInterval = null;
+let _kbLastCount    = -1;   // track doc count to detect changes
+
+function startKbPolling() {
+    // Poll every 10 seconds, but only when the tab is visible
+    _kbPollInterval = setInterval(() => {
+        if (document.visibilityState === "hidden") return;
+        _pollKnowledgeBase();
+    }, 10000);
+}
+
+function _pollKnowledgeBase() {
+    fetch("/documents")
+        .then(r => r.json())
+        .then(data => {
+            const docs  = data.documents || [];
+            const count = docs.length;
+            // Only re-render if something actually changed
+            if (count !== _kbLastCount) {
+                _kbLastCount = count;
+                loadKnowledgeBase();
+            }
+        })
+        .catch(() => { /* silent — network blip, try again next tick */ });
+}
 
 // ===============================
 // Knowledge Base — load & render
@@ -42,6 +73,7 @@ function loadKnowledgeBase() {
             kbLoading.style.display = "none";
 
             const docs = data.documents || [];
+            _kbLastCount = docs.length;   // keep poll tracker in sync
             kbCount.textContent = docs.length + (docs.length === 1 ? " doc" : " docs");
 
             if (docs.length === 0) {

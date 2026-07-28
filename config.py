@@ -1,4 +1,5 @@
 import os
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,17 +18,30 @@ class Config:
 
 
     # ==============================
+    # Qdrant Vector Store
+    # ==============================
+
+    QDRANT_PATH = os.getenv(
+        "QDRANT_PATH",
+        "vector_store"
+    )
+
+    QDRANT_COLLECTION_NAME = os.getenv(
+        "QDRANT_COLLECTION_NAME",
+        "docmind"
+    )
+
+    # Backward-compat alias (some older code may still reference VECTOR_DB_PATH)
+    VECTOR_DB_PATH = QDRANT_PATH
+
+
+    # ==============================
     # File Storage
     # ==============================
 
     UPLOAD_FOLDER = os.getenv(
         "UPLOAD_FOLDER",
         "uploads"
-    )
-
-    VECTOR_DB_PATH = os.getenv(
-        "VECTOR_DB_PATH",
-        "vector_store"
     )
 
 

@@ -4,7 +4,6 @@ from datetime import datetime
 
 from config import Config
 
-from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import PromptTemplate
@@ -102,19 +101,26 @@ prompt_with_history = PromptTemplate(
 
 
 # =====================================
-# Load FAISS
+# Load Qdrant vector store
 # =====================================
 
 def load_vector_db():
-    if not os.path.exists(Config.VECTOR_DB_PATH):
-        raise Exception("No document has been processed yet.")
+    """Load the Qdrant vector store for querying."""
+    from langchain_qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
 
-    vectordb = FAISS.load_local(
-        Config.VECTOR_DB_PATH,
-        embeddings,
-        allow_dangerous_deserialization=True,
+    os.makedirs(Config.QDRANT_PATH, exist_ok=True)
+    client = QdrantClient(path=Config.QDRANT_PATH)
+
+    collections = [c.name for c in client.get_collections().collections]
+    if Config.QDRANT_COLLECTION_NAME not in collections:
+        raise Exception("No document has been processed yet. Please upload a document first.")
+
+    return QdrantVectorStore(
+        client=client,
+        collection_name=Config.QDRANT_COLLECTION_NAME,
+        embedding=embeddings,
     )
-    return vectordb
 
 
 # =====================================

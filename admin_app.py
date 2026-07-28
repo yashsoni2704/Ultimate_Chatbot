@@ -22,7 +22,7 @@ from werkzeug.utils import secure_filename
 
 from config import Config
 from utils.loader import process_document
-from utils.embeddings import get_all_documents
+from utils.embeddings import get_all_documents, delete_document_chunks
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -37,12 +37,12 @@ admin_app = Flask(
 admin_app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(Config.VECTOR_DB_PATH, exist_ok=True)
+os.makedirs(Config.QDRANT_PATH, exist_ok=True)
 
 logger.info("🛡️  ADMIN PANEL STARTED")
 logger.info(f"Timestamp    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 logger.info(f"Upload folder: {os.path.abspath(Config.UPLOAD_FOLDER)}")
-logger.info(f"Vector store : {os.path.abspath(Config.VECTOR_DB_PATH)}")
+logger.info(f"Vector store : {os.path.abspath(Config.QDRANT_PATH)}")
 logger.info(
     f"LangSmith tracing: {'✅ ENABLED — project=' + Config.LANGCHAIN_PROJECT if Config.LANGCHAIN_TRACING_V2 else '⏸️  DISABLED'}"
 )
@@ -143,12 +143,12 @@ def admin_documents():
 @admin_app.route("/admin/delete-document", methods=["POST"])
 def admin_delete_document():
     """
-    Remove a document from the registry and delete the uploaded file.
-    Body: { "filename": "report.pdf" }
+    Remove a document from the knowledge base:
+      1. Delete its chunks from Qdrant (surgical — other docs untouched)
+      2. Remove its entry from registry.json
+      3. Delete the uploaded file from disk
 
-    Note: FAISS index is NOT rebuilt — vectors for the deleted document
-    remain in the index but the document is de-listed from the registry
-    so it won't appear in the knowledge base listing.
+    Body: { "filename": "report.pdf" }
     """
     try:
         data = request.get_json()
@@ -156,7 +156,7 @@ def admin_delete_document():
             return jsonify({"status": "error", "message": "filename is required."}), 400
 
         filename = data["filename"]
-        registry_path = os.path.join(Config.VECTOR_DB_PATH, "registry.json")
+        registry_path = os.path.join(Config.QDRANT_PATH, "registry.json")
 
         if not os.path.exists(registry_path):
             return jsonify({"status": "error", "message": "Registry not found."}), 404
@@ -173,18 +173,22 @@ def admin_delete_document():
 
         record = matching[0]
 
-        # Remove from registry
-        records = [r for r in records if r.get("filename") != filename]
-        with open(registry_path, "w", encoding="utf-8") as f:
-            json.dump(records, f, indent=2, ensure_ascii=False)
+        # ── 1. Delete chunks from Qdrant ───────────────────────────────────
+        deleted = delete_document_chunks(filename)
+        logger.info(f"🗑️  Removed {deleted} vector(s) for '{filename}' from Qdrant")
 
-        # Delete the uploaded file if it still exists
+        # ── 2. Remove from registry ────────────────────────────────────────
+        remaining = [r for r in records if r.get("filename") != filename]
+        with open(registry_path, "w", encoding="utf-8") as f:
+            json.dump(remaining, f, indent=2, ensure_ascii=False)
+
+        # ── 3. Delete the uploaded file if it still exists ─────────────────
         file_path = record.get("path", "")
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"🗑️  Deleted file: {file_path}")
 
-        logger.info(f"✅ Removed '{filename}' from knowledge base")
+        logger.info(f"✅ '{filename}' fully removed from knowledge base")
         return jsonify({
             "status": "success",
             "message": f"'{filename}' removed from knowledge base.",

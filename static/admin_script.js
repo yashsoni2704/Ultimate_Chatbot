@@ -250,6 +250,8 @@ function hideUploadStatus() {
 //  KNOWLEDGE BASE — load & render
 // ════════════════════════════════════════════════════════════════════════════
 
+let _adminKbLastCount = -1;   // track doc count to detect changes for polling
+
 async function loadKnowledgeBase() {
     kbLoading.style.display   = "flex";
     kbEmpty.style.display     = "none";
@@ -259,13 +261,38 @@ async function loadKnowledgeBase() {
     try {
         const res  = await fetch(`${API}/admin/documents`);
         const data = await res.json();
-        renderKnowledgeBase(data.documents || []);
+        const docs = data.documents || [];
+        _adminKbLastCount = docs.length;   // keep poll tracker in sync
+        renderKnowledgeBase(docs);
     } catch (err) {
         renderKnowledgeBase([]);
     } finally {
         kbLoading.style.display = "none";
         refreshBtn.classList.remove("spinning");
     }
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────
+// Silently check every 10 s; only re-render if the count changes
+function startAdminKbPolling() {
+    setInterval(async () => {
+        if (document.visibilityState === "hidden") return;
+        try {
+            const res  = await fetch(`${API}/admin/documents`);
+            const data = await res.json();
+            const docs = data.documents || [];
+            if (docs.length !== _adminKbLastCount) {
+                _adminKbLastCount = docs.length;
+                renderKnowledgeBase(docs);
+                // Update sidebar stats without full spinner
+                const totalChunks = docs.reduce((sum, d) => sum + (d.chunks || 0), 0);
+                statTotal.textContent  = docs.length;
+                statChunks.textContent = totalChunks > 999
+                    ? (totalChunks / 1000).toFixed(1) + "k"
+                    : totalChunks;
+            }
+        } catch (_) { /* silent — network blip */ }
+    }, 10000);
 }
 
 function renderKnowledgeBase(docs) {
@@ -358,6 +385,12 @@ modalConfirm.addEventListener("click", async () => {
     const filename = pendingDelete;
     closeDeleteModal();
 
+    // Show removing state
+    showUploadStatus(`⏳ Removing '${filename}' from knowledge base — please wait…`, "info");
+
+    // Disable the confirm button during rebuild to prevent double-clicks
+    modalConfirm.disabled = true;
+
     try {
         const res  = await fetch(`${API}/admin/delete-document`, {
             method: "POST",
@@ -367,13 +400,15 @@ modalConfirm.addEventListener("click", async () => {
         const data = await res.json();
 
         if (data.status === "success") {
-            showUploadStatus(`🗑️ ${data.message}`, "info");
+            showUploadStatus(`🗑️ ${data.message}`, "success");
             loadKnowledgeBase();
         } else {
             showUploadStatus(`❌ ${data.message}`, "error");
         }
     } catch (err) {
         showUploadStatus(`❌ Network error: ${err.message}`, "error");
+    } finally {
+        modalConfirm.disabled = false;
     }
 });
 
@@ -387,4 +422,7 @@ refreshBtn.addEventListener("click", loadKnowledgeBase);
 //  INIT
 // ════════════════════════════════════════════════════════════════════════════
 
-window.addEventListener("load", loadKnowledgeBase);
+window.addEventListener("load", () => {
+    loadKnowledgeBase();
+    startAdminKbPolling();
+});
