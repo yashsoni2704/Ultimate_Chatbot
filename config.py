@@ -1,5 +1,4 @@
 import os
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,6 +14,15 @@ class Config:
         "GOOGLE_API_KEY",
         ""
     ).strip()
+
+
+    # ==============================
+    # Web Scraping
+    # ==============================
+
+    SCRAPING_TIMEOUT = int(os.getenv("SCRAPING_TIMEOUT", "60"))          # seconds to wait for page load
+    SCRAPING_MIN_CHARS = int(os.getenv("SCRAPING_MIN_CHARS", "1"))       # effectively disabled — crawl everything
+    SCRAPING_MAX_CHARS = int(os.getenv("SCRAPING_MAX_CHARS", "10000000"))# 10MB cap — virtually unlimited
 
 
     # ==============================
@@ -166,4 +174,19 @@ class Config:
     LANGCHAIN_PROJECT = os.getenv(
         "LANGCHAIN_PROJECT",
         "docmind-chatbot"
+    ).strip()
+
+
+    # ==============================
+    # MongoDB
+    # ==============================
+
+    MONGO_URI = os.getenv(
+        "MONGO_URI",
+        "mongodb://localhost:27017/"
+    ).strip()
+
+    MONGO_DB_NAME = os.getenv(
+        "MONGO_DB_NAME",
+        "Ultimate_Chatbot"
     ).strip()

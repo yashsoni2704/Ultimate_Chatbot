@@ -704,6 +704,7 @@ body {
 .send-btn svg { width: 17px; height: 17px; color: white; }
 .send-btn:hover { transform: scale(1.06); box-shadow: 0 4px 16px rgba(99,102,241,0.4); }
 .send-btn:active { transform: scale(0.96); }
+.send-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
 
 .input-hint { font-size: 11px; color: #b0bec5; margin-top: 8px; text-align: center; }
 

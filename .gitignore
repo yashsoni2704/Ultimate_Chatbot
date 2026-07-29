@@ -47,3 +47,7 @@ dist/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local virtualenvs to remove
+chatbot_test_env/
+Yash/

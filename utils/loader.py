@@ -35,8 +35,6 @@ from langchain_community.document_loaders import (
     CSVLoader,
 )
 from langchain_text_splitters.character import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.vectorstores import FAISS
 
 # ── project ──────────────────────────────────────────────────────────────────
 from config import Config
@@ -401,7 +399,7 @@ def load_document(file_path: str) -> list:
     # ── PDF (original — untouched) ──────────────────────────────────────────
     if extension == ".pdf":
         loader = PyPDFLoader(file_path)
-        print(f"Loading PDF document: {loader}")
+        logger.info(f"Loading PDF document: {file_path}")
         documents = loader.load()
 
     # ── CSV (original — untouched) ──────────────────────────────────────────
@@ -440,7 +438,7 @@ def load_document(file_path: str) -> list:
             "Supported: PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, CSV, TXT, RTF"
         )
 
-    print(f"Loaded {len(documents)} document(s) from {file_path}")
+    logger.info(f"Loaded {len(documents)} document(s) from {file_path}")
     return documents
 
 
@@ -551,3 +549,95 @@ def _traced_load(file_path: str, filename: str = "", file_type: str = "") -> lis
 def _traced_chunk(documents: list, filename: str = "") -> list:
     """Thin wrapper around chunk_documents() so it gets its own LangSmith span."""
     return chunk_documents(documents)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# URL INGESTION PIPELINE
+# ════════════════════════════════════════════════════════════════════════════
+
+def load_url(url: str) -> str:
+    """
+    Full ingestion pipeline for a web URL:
+      1. Scrape with Playwright → list of LangChain Documents
+      2. Chunk
+      3. Embed → save to Qdrant
+
+    Re-crawl support: if the URL was previously ingested, its old vectors
+    are surgically deleted from Qdrant and the registry entry is removed
+    before re-ingesting fresh content.
+
+    Returns a human-readable result string.
+    """
+    from utils.scraper import scrape_url
+    from utils.embeddings import (
+        delete_document_chunks,
+        _load_registry,
+        _save_registry,
+        REGISTRY_FILE,
+    )
+
+    logger.info("=" * 80)
+    logger.info("🌐  URL INGESTION STARTED")
+    logger.info(f"  URL       : {url}")
+    logger.info(f"  Timestamp : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    try:
+        # ── Re-crawl: remove old data if URL was previously ingested ──────
+        registry = _load_registry()
+        # Guard against null/malformed registry entries
+        registry = [r for r in registry if r is not None]
+        existing = [r for r in registry if r.get("filename") == url]
+
+        if existing:
+            logger.info(f"  🔄  URL already ingested — removing old data for re-crawl...")
+            deleted = delete_document_chunks(url)
+            logger.info(f"  🗑️  Deleted {deleted} old vector(s)")
+            # Remove from registry
+            registry = [r for r in registry if r.get("filename") != url]
+            _save_registry(registry)
+            logger.info(f"  ✅  Old registry entry removed — starting fresh crawl")
+
+        # ── Step 1: Scrape ─────────────────────────────────────────────────
+        logger.info("  Step 1: Scraping URL...")
+        documents = scrape_url(url)
+        logger.info(f"  ✅  Scraped {len(documents)} section document(s)")
+
+        if not documents:
+            raise Exception("No content extracted from URL.")
+
+        # Guard: ensure every document has a metadata dict (never None)
+        for doc in documents:
+            if doc.metadata is None:
+                doc.metadata = {"source": url, "source_type": "url"}
+
+        # ── Step 2: Chunk ──────────────────────────────────────────────────
+        logger.info(
+            f"  Step 2: Chunking "
+            f"(size={Config.CHUNK_SIZE}, overlap={Config.CHUNK_OVERLAP})..."
+        )
+        chunks = chunk_documents(documents)
+        logger.info(f"  ✅  Created {len(chunks)} chunks")
+
+        # ── Step 3: Embed + save to Qdrant ────────────────────────────────
+        logger.info("  Step 3: Embedding and storing in Qdrant...")
+        embedding_manager = EmbeddingManager()
+
+        # Pass url as source_path so registry stores the URL as the identifier
+        result = embedding_manager.create_vector_store(chunks, source_path=url)
+
+        if result is None:
+            # Shouldn't happen after re-crawl cleanup, but guard anyway
+            return f"URL already in knowledge base: {url}"
+
+        logger.info("  ✅  Vectors stored in Qdrant")
+        logger.info("=" * 80)
+        logger.info("🌐  URL INGESTION COMPLETE")
+        logger.info("=" * 80)
+
+        return f"URL scraped and ingested successfully. {len(chunks)} chunks created."
+
+    except Exception as e:
+        logger.error(f"  ❌  Error ingesting URL: {str(e)}")
+        logger.error("=" * 80)
+        raise

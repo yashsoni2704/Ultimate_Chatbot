@@ -431,6 +431,64 @@ body {
     color: #60a5fa;
 }
 
+/* ── URL Input (Scrape Website card) ── */
+.url-input-wrap {
+    margin-bottom: 16px;
+}
+.url-input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 10px 14px;
+    transition: border-color 0.15s;
+}
+.url-input-row:focus-within {
+    border-color: #f59e0b;
+}
+.url-input-icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    color: #64748b;
+}
+.url-input-icon svg {
+    width: 18px;
+    height: 18px;
+    stroke: #64748b;
+}
+.url-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e2e8f0;
+    font-size: 13px;
+    font-family: inherit;
+}
+.url-input::placeholder { color: #475569; }
+.url-hint {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #475569;
+    line-height: 1.5;
+}
+
+/* URL entry in table */
+.td-url-link {
+    color: #f59e0b;
+    text-decoration: none;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 280px;
+    display: inline-block;
+}
+.td-url-link:hover { text-decoration: underline; }
+
 /* ── Knowledge Base Section ── */
 .kb-section {
     background: rgba(255,255,255,0.03);
@@ -511,6 +569,38 @@ body {
 
 /* Table */
 .kb-table-wrap { overflow-x: auto; padding: 0 24px 24px; }
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 0 24px 18px;
+}
+.pagination-button {
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.05);
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    font-family: inherit;
+}
+.pagination-button:hover:not(:disabled) {
+    background: rgba(255,255,255,0.1);
+    color: #e2e8f0;
+}
+.pagination-button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+.pagination-info {
+    color: #94a3b8;
+    font-size: 12px;
+    white-space: nowrap;
+}
 .kb-table {
     width: 100%;
     border-collapse: collapse;
@@ -684,4 +774,70 @@ body {
     .admin-layout { flex-direction: column; }
     .admin-sidebar { width: 100%; height: auto; overflow: visible; }
     .admin-main { overflow-y: auto; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ANALYTICS & NAVIGATION additions
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Sidebar Nav ── */
+.nav-section { padding: 0 4px; }
+
+.nav-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+}
+
+.nav-link {
+    display: block;
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: rgba(226,232,240,0.7);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s;
+    cursor: pointer;
+}
+
+.nav-link:hover {
+    background: rgba(255,255,255,0.07);
+    color: #e2e8f0;
+}
+
+.nav-link.active {
+    background: rgba(245,158,11,0.15);
+    color: #f59e0b;
+    border: 1px solid rgba(245,158,11,0.2);
+}
+
+/* ── Stats grid — 4 cards ── */
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 0 4px;
+}
+
+/* ── Table truncate cells ── */
+.td-truncate {
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+}
+
+/* ── Code-style small text ── */
+code {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 12px;
+    color: #94a3b8;
 }

@@ -173,7 +173,7 @@ function autoScrollChat() {
 // ===============================
 
 askBtn.addEventListener("click", sendMessage);
-questionInput.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+questionInput.addEventListener("keypress", (e) => { if (e.key === "Enter" && !askBtn.disabled) sendMessage(); });
 
 function sendMessage() {
     const question = questionInput.value.trim();
@@ -184,6 +184,11 @@ function sendMessage() {
 
     addUserMessage(question);
     questionInput.value = "";
+
+    // ── Disable send while answer is in progress, keep input typeable ──
+    askBtn.disabled           = true;
+    questionInput.placeholder = "Ask anything about your documents…";
+
     addLoading();
 
     fetch("/chat", {
@@ -195,13 +200,20 @@ function sendMessage() {
     .then(result => {
         removeLoading();
         addBotMessage(result.status === "success" ? result.answer : "❌ " + result.message);
+        _enableInput();
         setTimeout(() => { autoScrollChat(); questionInput.focus(); }, 100);
     })
     .catch(err => {
         removeLoading();
         addBotMessage("❌ " + err.message);
+        _enableInput();
         setTimeout(() => { autoScrollChat(); questionInput.focus(); }, 100);
     });
+}
+
+function _enableInput() {
+    askBtn.disabled           = false;
+    questionInput.placeholder = "Ask anything about your documents…";
 }
 
 // ===============================

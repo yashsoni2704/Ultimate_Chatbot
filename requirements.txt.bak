@@ -1,0 +1,30 @@
+Flask
+pymongo==4.7.3
+langchain
+langchain-community
+langchain-ollama
+faiss-cpu
+numpy
+python-dotenv
+pypdf
+requests
+gunicorn
+tiktoken
+
+# Multi-format document ingestion
+python-docx
+openpyxl
+xlrd
+striprtf
+
+# Vector store
+qdrant-client
+langchain-qdrant
+
+# Web scraping
+playwright
+beautifulsoup4
+lxml
+
+# Observability
+langsmith>=0.1.0

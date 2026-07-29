@@ -3,13 +3,6 @@ import traceback
 from datetime import datetime
 
 from config import Config
-
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import PromptTemplate
-from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,22 +23,56 @@ else:
 
 
 # =====================================
-# Embeddings (Ollama)
+# Lazy singletons — ALL heavy imports
+# (langchain_ollama, langchain_classic)
+# are deferred until the first real RAG
+# call. Smalltalk/greetings return in
+# milliseconds with zero Ollama overhead.
 # =====================================
 
-embeddings = OllamaEmbeddings(
-    model=Config.EMBEDDING_MODEL
-)
+_embeddings = None
+_llm        = None
+_prompt_no_history   = None
+_prompt_with_history = None
 
 
-# =====================================
-# LLM (Ollama)
-# =====================================
+def _get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        from langchain_community.embeddings import OllamaEmbeddings
+        logger.info(f"Initializing embedding model: {Config.EMBEDDING_MODEL}")
+        _embeddings = OllamaEmbeddings(model=Config.EMBEDDING_MODEL)
+        logger.info("✅ Embedding model ready")
+    return _embeddings
 
-llm = ChatOllama(
-    model=Config.LLM_MODEL,
-    temperature=Config.LLM_TEMPERATURE,
-)
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        from langchain_ollama import ChatOllama
+        logger.info(f"Initializing LLM: {Config.LLM_MODEL}")
+        _llm = ChatOllama(
+            model=Config.LLM_MODEL,
+            temperature=Config.LLM_TEMPERATURE,
+        )
+        logger.info("✅ LLM ready")
+    return _llm
+
+
+def _get_prompts():
+    """Build and cache the PromptTemplate objects (also deferred)."""
+    global _prompt_no_history, _prompt_with_history
+    if _prompt_no_history is None:
+        from langchain_core.prompts import PromptTemplate
+        _prompt_no_history = PromptTemplate(
+            template=PROMPT_NO_HISTORY,
+            input_variables=["context", "input"],
+        )
+        _prompt_with_history = PromptTemplate(
+            template=PROMPT_WITH_HISTORY,
+            input_variables=["context", "chat_history", "input"],
+        )
+    return _prompt_no_history, _prompt_with_history
 
 
 # =====================================
@@ -89,15 +116,8 @@ Question:
 Answer:
 """
 
-prompt_no_history = PromptTemplate(
-    template=PROMPT_NO_HISTORY,
-    input_variables=["context", "input"],
-)
-
-prompt_with_history = PromptTemplate(
-    template=PROMPT_WITH_HISTORY,
-    input_variables=["context", "chat_history", "input"],
-)
+prompt_no_history = None   # built lazily in _get_prompts()
+prompt_with_history = None
 
 
 # =====================================
@@ -119,7 +139,7 @@ def load_vector_db():
     return QdrantVectorStore(
         client=client,
         collection_name=Config.QDRANT_COLLECTION_NAME,
-        embedding=embeddings,
+        embedding=_get_embeddings(),
     )
 
 
@@ -159,16 +179,21 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
     history = history or []
     metadata = metadata or {}
 
-    # ── LangSmith run metadata ─────────────────────────────────
-    run_metadata = {
-        "question": question,
-        "llm_model": Config.LLM_MODEL,
-        "embedding_model": Config.EMBEDDING_MODEL,
-        "conversation_history_enabled": Config.CONVERSATION_HISTORY,
-        "history_turns": len(history),
-        "top_k": Config.TOP_K,
-        **metadata,  # merge caller-provided tags
-    }
+    # ── LangSmith run config (only built when tracing is actually on) ──────
+    if Config.LANGCHAIN_TRACING_V2:
+        langsmith_config = {
+            "metadata": {
+                "question": question,
+                "llm_model": Config.LLM_MODEL,
+                "embedding_model": Config.EMBEDDING_MODEL,
+                "conversation_history_enabled": Config.CONVERSATION_HISTORY,
+                "history_turns": len(history),
+                "top_k": Config.TOP_K,
+                **metadata,
+            }
+        }
+    else:
+        langsmith_config = None
 
     try:
         # ── Question header ────────────────────────────────────
@@ -239,6 +264,13 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
             search_kwargs={"k": Config.TOP_K},
         )
 
+        # ── Deferred imports for chain building ────────────────
+        from langchain_classic.chains import create_retrieval_chain
+        from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+
+        prompt_no_hist, prompt_with_hist = _get_prompts()
+        llm = _get_llm()
+
         # ── Choose prompt & build chain ────────────────────────
         if Config.CONVERSATION_HISTORY and history:
             logger.info(f"Using prompt WITH conversation history ({len(history)} turns)")
@@ -249,7 +281,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
                 logger.info(f"  {line}")
             logger.info("-" * 60)
 
-            document_chain = create_stuff_documents_chain(llm, prompt_with_history)
+            document_chain  = create_stuff_documents_chain(llm, prompt_with_hist)
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (with history)")
             logger.info("")
@@ -259,7 +291,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
                     "input": question,
                     "chat_history": formatted_history,
                 },
-                config={"metadata": run_metadata} if Config.LANGCHAIN_TRACING_V2 else None,
+                config=langsmith_config,
             )
 
         else:
@@ -268,14 +300,14 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
             else:
                 logger.info("Conversation history DISABLED — using plain prompt")
 
-            document_chain = create_stuff_documents_chain(llm, prompt_no_history)
+            document_chain  = create_stuff_documents_chain(llm, prompt_no_hist)
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (no history)")
             logger.info("")
             logger.info("Generating answer from LLM...")
             result = retrieval_chain.invoke(
                 {"input": question},
-                config={"metadata": run_metadata} if Config.LANGCHAIN_TRACING_V2 else None,
+                config=langsmith_config,
             )
 
         answer = result["answer"]

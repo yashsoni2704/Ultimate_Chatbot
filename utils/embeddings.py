@@ -21,7 +21,9 @@ def _load_registry() -> list:
     if os.path.exists(REGISTRY_FILE):
         try:
             with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Filter out any null/malformed entries
+                return [r for r in data if r is not None and isinstance(r, dict)]
         except (json.JSONDecodeError, IOError):
             return []
     return []
@@ -42,9 +44,11 @@ def _is_already_ingested(filename: str) -> bool:
 
 def _register_document(filename: str, file_path: str, chunk_count: int) -> None:
     records = _load_registry()
+    # For URLs don't resolve as filesystem path
+    stored_path = file_path if (file_path.startswith("http://") or file_path.startswith("https://")) else os.path.abspath(file_path)
     records.append({
         "filename":    filename,
-        "path":        os.path.abspath(file_path),   # always store absolute path
+        "path":        stored_path,
         "chunks":      chunk_count,
         "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
@@ -167,6 +171,11 @@ class EmbeddingManager:
         from langchain_qdrant import QdrantVectorStore
 
         filename = os.path.basename(source_path) if source_path else ""
+
+        # For URLs, os.path.basename returns the last path segment which is
+        # not a useful key — use the full URL as the filename identifier
+        if source_path and (source_path.startswith("http://") or source_path.startswith("https://")):
+            filename = source_path
 
         # ── Duplicate guard ────────────────────────────────────────────────
         if filename and _is_already_ingested(filename):
