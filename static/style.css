@@ -930,3 +930,417 @@ kbd {
     30%     { box-shadow: 0 0 0 5px rgba(16,185,129,0); }
     100%    { box-shadow: none; }
 }
+
+/* ============================================================
+   USER GREETING CHIP  (chat header — top right)
+   ============================================================ */
+
+.chat-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.user-greeting {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(139,92,246,0.12));
+    border: 1.5px solid rgba(99,102,241,0.3);
+    border-radius: 24px;
+    padding: 6px 14px 6px 7px;
+    opacity: 0;
+    transform: translateY(-6px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    pointer-events: none;
+}
+
+.user-greeting.greeting-in {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.user-greeting-avatar {
+    width: 28px;
+    height: 28px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    color: #fff;
+    flex-shrink: 0;
+    letter-spacing: 0;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.35);
+}
+
+.user-greeting-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #4f46e5;
+    white-space: nowrap;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ============================================================
+   LEAD CAPTURE MODAL
+   ============================================================ */
+
+.lead-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(10, 10, 26, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: flex;
+    align-items: flex-end;         /* slides up from the bottom */
+    justify-content: center;
+    padding: 0 16px 28px;
+    transition: background 0.3s ease;
+}
+
+/* On wider screens centre it */
+@media (min-width: 640px) {
+    .lead-modal-overlay {
+        align-items: center;
+        padding: 0;
+    }
+}
+
+.lead-modal {
+    position: relative;
+    background: #ffffff;
+    border-radius: 24px 24px 20px 20px;
+    width: 100%;
+    max-width: 460px;
+    padding: 36px 32px 32px;
+    box-shadow:
+        0 24px 64px rgba(0,0,0,0.18),
+        0 4px 16px rgba(99,102,241,0.12);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transform: translateY(40px);
+    opacity: 0;
+    transition: transform 0.32s cubic-bezier(.34,1.45,.64,1), opacity 0.28s ease;
+}
+
+.lead-modal-overlay.lead-modal-visible .lead-modal {
+    transform: translateY(0);
+    opacity: 1;
+}
+
+@media (min-width: 640px) {
+    .lead-modal {
+        border-radius: 24px;
+    }
+}
+
+/* Close button */
+.lead-modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 32px;
+    height: 32px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: #94a3b8;
+    transition: background 0.2s, color 0.2s;
+    flex-shrink: 0;
+}
+.lead-modal-close svg { width: 14px; height: 14px; }
+.lead-modal-close:hover { background: #fee2e2; border-color: #fca5a5; color: #ef4444; }
+
+/* Icon */
+.lead-modal-icon {
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 6px;
+    box-shadow: 0 4px 16px rgba(99,102,241,0.2);
+}
+.lead-modal-icon svg { width: 28px; height: 28px; stroke: #7c3aed; }
+
+/* Title & subtitle */
+.lead-modal-title {
+    font-size: 20px;
+    font-weight: 800;
+    color: #0f172a;
+    letter-spacing: -0.3px;
+    text-align: center;
+    margin-top: 4px;
+}
+
+.lead-modal-subtitle {
+    font-size: 13.5px;
+    color: #64748b;
+    text-align: center;
+    line-height: 1.6;
+    max-width: 340px;
+    margin-bottom: 6px;
+}
+
+/* Form */
+.lead-modal-form {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 6px;
+}
+
+.lead-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.lead-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+.lead-label svg { width: 13px; height: 13px; stroke: #8b5cf6; flex-shrink: 0; }
+
+.lead-input {
+    width: 100%;
+    padding: 12px 16px;
+    background: #f8fafc;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 12px;
+    font-size: 14px;
+    font-family: 'Inter', sans-serif;
+    color: #1e293b;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.lead-input::placeholder { color: #b0bec5; }
+.lead-input:focus {
+    border-color: #8b5cf6;
+    background: #fdfcff;
+    box-shadow: 0 0 0 4px rgba(139,92,246,0.1);
+}
+
+/* Error message */
+.lead-error {
+    font-size: 12.5px;
+    color: #ef4444;
+    background: #fff1f1;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 9px 13px;
+    line-height: 1.5;
+    margin-top: -4px;
+}
+
+/* Action buttons */
+.lead-modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.lead-skip-btn {
+    flex: 0 0 auto;
+    padding: 12px 18px;
+    background: #f8fafc;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 12px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #94a3b8;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    white-space: nowrap;
+}
+.lead-skip-btn:hover { background: #f1f5f9; border-color: #cbd5e1; color: #64748b; }
+
+.lead-submit-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 20px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #ffffff;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+    box-shadow: 0 4px 14px rgba(99,102,241,0.35);
+}
+.lead-submit-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.lead-submit-btn:hover:not(:disabled) {
+    opacity: 0.93;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(99,102,241,0.45);
+}
+.lead-submit-btn:active:not(:disabled) { transform: translateY(0); }
+.lead-submit-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Spinner inside submit button */
+.lead-btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   MIC BUTTON + COUNTDOWN RING + RECORDING STATES
+   ============================================================ */
+
+/* Wrapper holds both the SVG ring and the button, stacked */
+.mic-wrapper {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    margin: 4px 2px 4px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* The circular SVG ring — sits on top of the button via absolute */
+.mic-ring {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg);   /* start at 12 o'clock */
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+/* Track circle (faint grey) */
+.mic-ring-track {
+    fill: none;
+    stroke: rgba(99, 102, 241, 0.15);
+    stroke-width: 3;
+}
+
+/* Fill circle — dasharray driven by JS for countdown progress */
+.mic-ring-fill {
+    fill: none;
+    stroke: #6366f1;
+    stroke-width: 3;
+    stroke-linecap: round;
+    /* circumference = 2π×19 ≈ 119.4 */
+    stroke-dasharray: 119.4;
+    stroke-dashoffset: 119.4;   /* fully hidden by default */
+    transition: stroke-dashoffset 0.05s linear;
+}
+
+/* Show ring during spacebar hold (countdown phase) */
+.mic-wrapper.counting .mic-ring {
+    opacity: 1;
+}
+
+/* Mic button itself */
+.mic-btn {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    background: #f1f5f9;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+    z-index: 1;
+    flex-shrink: 0;
+}
+.mic-btn svg {
+    width: 16px;
+    height: 16px;
+    color: #64748b;
+    transition: color 0.2s;
+}
+.mic-btn:hover {
+    background: #ede9fe;
+    border-color: #a5b4fc;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
+}
+.mic-btn:hover svg { color: #6366f1; }
+
+/* ── Counting state (space held, ring filling) ── */
+.mic-wrapper.counting .mic-btn {
+    background: rgba(99, 102, 241, 0.08);
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+.mic-wrapper.counting .mic-btn svg { color: #6366f1; }
+
+/* ── Active/recording state ── */
+.mic-wrapper.recording .mic-ring { opacity: 0; }   /* hide ring when recording */
+
+.mic-wrapper.recording .mic-btn {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    border-color: #dc2626;
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2);
+    animation: micRecordPulse 1.4s ease-in-out infinite;
+}
+.mic-wrapper.recording .mic-btn svg { color: #fff; }
+
+@keyframes micRecordPulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2); }
+    50%       { box-shadow: 0 0 0 9px rgba(239, 68, 68, 0.06); }
+}
+
+/* ── Disabled state ── */
+.mic-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none !important;
+    animation: none !important;
+    box-shadow: none !important;
+}
+
+/* ── Mic status tooltip / label under input ── */
+.mic-status-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6366f1;
+    text-align: center;
+    margin-top: 5px;
+    min-height: 15px;
+    transition: opacity 0.2s;
+    letter-spacing: 0.2px;
+}
+.mic-status-label.hidden { opacity: 0; }

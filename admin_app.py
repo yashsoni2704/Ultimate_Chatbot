@@ -362,6 +362,7 @@ def api_chat_logs():
     """
     Recent chat logs with page-based pagination.
     GET /admin/api/chat-logs?page=1
+    Enriches each log with visitor name from the visitors collection.
     """
     try:
         page  = max(int(request.args.get("page", 1)), 1)
@@ -369,6 +370,24 @@ def api_chat_logs():
         skip  = (page - 1) * limit
         logs  = get_recent_chat_logs(limit=limit, skip=skip)
         total = get_db()["chat_logs"].count_documents({})
+
+        # Enrich logs with visitor name — bulk-fetch unique visitor_ids
+        visitor_ids = list({log.get("visitor_id", "") for log in logs if log.get("visitor_id")})
+        visitor_names = {}
+        if visitor_ids:
+            visitors = get_db()["visitors"].find(
+                {"visitor_id": {"$in": visitor_ids}},
+                {"visitor_id": 1, "name": 1, "_id": 0}
+            )
+            for v in visitors:
+                if v.get("name"):
+                    visitor_names[v["visitor_id"]] = v["name"]
+
+        for log in logs:
+            vid = log.get("visitor_id", "")
+            if vid and vid in visitor_names:
+                log["visitor_name"] = visitor_names[vid]
+
         return jsonify({
             "status": "success",
             "page":   page,

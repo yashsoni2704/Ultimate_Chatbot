@@ -671,11 +671,23 @@ async function loadChats(page = chatsCurrentPage) {
                 smalltalk: "#f59e0b",
             }[log.response_type] || "#94a3b8";
 
-            const visitorLabel = log.user_email
-                ? escHtml(log.user_email)
-                : log.visitor_id
-                    ? `<span style="font-family:monospace;font-size:11px;opacity:.7">${escHtml(log.visitor_id.slice(0, 8))}…</span>`
-                    : "—";
+            // Prefer real name > email > short UUID
+            let visitorLabel;
+            if (log.user_name && log.user_name.trim()) {
+                visitorLabel = `<span class="visitor-name-badge">${escHtml(log.user_name.trim())}</span>`;
+            } else if (log.user_email && log.user_email.trim()) {
+                visitorLabel = `<span class="visitor-email-badge">${escHtml(log.user_email.trim())}</span>`;
+            } else if (log.visitor_id) {
+                // Try to pull name from the visitor_id's profile stored in this log
+                const vName = log.visitor_name || "";
+                if (vName) {
+                    visitorLabel = `<span class="visitor-name-badge">${escHtml(vName.trim())}</span>`;
+                } else {
+                    visitorLabel = `<span class="visitor-uuid-badge" title="${escHtml(log.visitor_id)}">${escHtml(log.visitor_id.slice(0, 8))}…</span>`;
+                }
+            } else {
+                visitorLabel = `<span style="opacity:.4">—</span>`;
+            }
 
             tr.innerHTML = `
                 <td><span class="date-text">${formatDate(log.created_at)}</span></td>

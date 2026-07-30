@@ -7,6 +7,7 @@ from datetime import datetime
 from threading import Thread
 
 from flask import Flask, render_template, request, jsonify, session
+from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
 
 from config import Config
@@ -30,6 +31,7 @@ from db.models import (
 logger = get_logger(__name__)
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading", logger=False, engineio_logger=False)
 
 # Secret key for server-side session (visitor_id cookie)
 _secret_key = os.getenv("SECRET_KEY", "")
@@ -92,11 +94,11 @@ def _validate_file_path(path_value: str) -> None:
         raise ValueError(f"Unsupported file type. Supported formats: {exts}")
 
 
-def _get_or_create_visitor_id() -> str:
-    """Return visitor_id from Flask session, creating one if absent."""
-    if "visitor_id" not in session:
-        session["visitor_id"] = str(uuid.uuid4())
-    return session["visitor_id"]
+def _get_visitor_id() -> str:
+    """Return visitor_id from Flask session, or empty string if none set.
+    Never auto-generates — UUID creation is owned exclusively by /init-session
+    so that localStorage is always the single source of truth."""
+    return session.get("visitor_id", "")
 
 
 
@@ -124,20 +126,23 @@ def before_request():
         return
 
     # ── Only track once per browser session ──────────────────────────────────
-    # "visitor_tracked" is set in the Flask session cookie after the first
-    # successful track, so geo-lookup + DB write only happens on the very
-    # first request from each browser tab/session.
+    # "visitor_tracked" is set after the first successful geo-lookup + DB write.
+    # We ONLY track if the session already has a visitor_id set by /init-session.
+    # We never auto-generate a UUID here — that is owned by /init-session alone.
     if session.get("visitor_tracked"):
         return
 
+    visitor_id = session.get("visitor_id", "")
+    if not visitor_id:
+        # No UUID yet — /init-session hasn't been called, nothing to track
+        return
+
     try:
-        visitor_id = _get_or_create_visitor_id()
         ip = get_client_ip(request)
         ua = request.headers.get("User-Agent", "")
         browser, os_name, device_type = get_browser_os(ua)
 
-        # Mark as tracked immediately so even if the async write fails we
-        # don't retry on every subsequent request.
+        # Mark tracked immediately so geo-lookup never runs twice
         session["visitor_tracked"] = True
 
         def _track_async(visitor_id, ip, ua, browser, os_name, device_type):
@@ -396,9 +401,7 @@ def chat():
             return jsonify({"status": "error", "message": "Question cannot be empty."}), 400
 
         # ── Visitor + session tracking ────────────────────────
-        visitor_id = session.get("visitor_id", "")
-
-        # ── Small-talk intercept ──────────────────────────────
+        visitor_id = session.get("visitor_id", "")        # ── Small-talk intercept ──────────────────────────────
         # Checked BEFORE any DB/LLM work so greetings return instantly.
         smalltalk_reply = get_smalltalk_reply(question)
         if smalltalk_reply:
@@ -483,8 +486,117 @@ def chat():
 
 
 # ---------------------------------------------------------
-# HEALTH CHECK
+# INIT SESSION — called by frontend on every page load
+# Accepts an optional visitor_id from localStorage.
+# Returns the visitor_id and any stored name so the UI
+# can greet returning users immediately.
 # ---------------------------------------------------------
+
+@app.route("/init-session", methods=["POST"])
+def init_session():
+    try:
+        data = request.get_json() or {}
+        client_uuid = data.get("visitor_id", "").strip()
+
+        if client_uuid:
+            # Returning visitor — localStorage had a UUID, trust it
+            visitor_id = client_uuid
+        else:
+            # Brand-new visitor — generate a fresh UUID
+            visitor_id = str(uuid.uuid4())
+            # Clear tracked flag so geo-lookup runs for this new identity
+            session.pop("visitor_tracked", None)
+
+        # Always write the authoritative UUID into the Flask session
+        # so /chat and other endpoints can read it without the client
+        # having to send it every time.
+        session["visitor_id"] = visitor_id
+
+        # Fetch any existing profile (name, email, phone)
+        from db.models import get_visitor
+        visitor = get_visitor(visitor_id) or {}
+
+        return jsonify({
+            "status":     "success",
+            "visitor_id": visitor_id,
+            "name":       visitor.get("name") or "",
+            "email":      visitor.get("email") or "",
+        })
+    except Exception as e:
+        logger.error(f" /init-session error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# UPDATE VISITOR — saves name / email / phone from the
+# optional lead-capture form shown after 2-3 questions.
+# ---------------------------------------------------------
+
+@app.route("/update-visitor", methods=["POST"])
+def update_visitor():
+    try:
+        data = request.get_json() or {}
+        visitor_id = data.get("visitor_id", "").strip() or session.get("visitor_id", "")
+
+        if not visitor_id:
+            return jsonify({"status": "error", "message": "visitor_id is required."}), 400
+
+        name  = (data.get("name",  "") or "").strip()
+        email = (data.get("email", "") or "").strip()
+        phone = (data.get("phone", "") or "").strip()
+
+        if not name and not email and not phone:
+            return jsonify({"status": "error", "message": "At least one field is required."}), 400
+
+        upsert_visitor(
+            visitor_id = visitor_id,
+            name       = name  or None,
+            email      = email or None,
+            phone      = phone or None,
+        )
+        logger.info(f" Visitor profile updated: {visitor_id} name={name!r}")
+        return jsonify({"status": "success", "name": name, "email": email})
+    except Exception as e:
+        logger.error(f" /update-visitor error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# VISITOR INFO — lightweight GET for returning users
+# ---------------------------------------------------------
+
+@app.route("/visitor-info", methods=["GET"])
+def visitor_info():
+    try:
+        visitor_id = request.args.get("visitor_id", "").strip() or session.get("visitor_id", "")
+        if not visitor_id:
+            return jsonify({"status": "error", "message": "visitor_id is required."}), 400
+
+        from db.models import get_visitor
+        visitor = get_visitor(visitor_id) or {}
+        return jsonify({
+            "status":     "success",
+            "visitor_id": visitor_id,
+            "name":       visitor.get("name")  or "",
+            "email":      visitor.get("email") or "",
+        })
+    except Exception as e:
+        logger.error(f" /visitor-info error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# CLIENT CONFIG — exposes safe frontend settings
+# ---------------------------------------------------------
+
+@app.route("/client-config")
+def client_config():
+    return jsonify({
+        "mic_silence_timeout": Config.MIC_SILENCE_TIMEOUT,
+    })
+
 
 @app.route("/health")
 def health():
@@ -501,6 +613,147 @@ def health():
 
 
 # ---------------------------------------------------------
+# LOG VOICE INPUT — called by frontend after mic stops
+# ---------------------------------------------------------
+
+@app.route("/log-voice", methods=["POST"])
+def log_voice():
+    try:
+        data = request.get_json() or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify({"status": "ok"})
+
+        visitor_id = session.get("visitor_id", "")
+        session_id = session.get("session_id", "")
+        logger.info(f" [MIC] {text!r}")
+
+        def _save(visitor_id, session_id, text):
+            try:
+                save_chat_log(
+                    question      = text,
+                    answer        = "",
+                    visitor_id    = visitor_id,
+                    session_id    = session_id,
+                    response_type = "voice_input",
+                    found         = 0,
+                )
+            except Exception as exc:
+                logger.warning(f"  Voice log save failed: {exc}")
+
+        Thread(target=_save, args=(visitor_id, session_id, text), daemon=True).start()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# SOCKET.IO — real-time mic transcription via AssemblyAI
+# ---------------------------------------------------------
+
+# One TranscribeSession per socket connection (keyed by sid)
+_transcribe_sessions = {}
+
+@socketio.on("connect", namespace="/transcribe")
+def on_transcribe_connect():
+    logger.info(f" Transcribe WS connected: {request.sid}")
+
+@socketio.on("disconnect", namespace="/transcribe")
+def on_transcribe_disconnect():
+    sid = request.sid
+    sess = _transcribe_sessions.pop(sid, None)
+    if sess:
+        try:
+            sess.stop()
+        except Exception:
+            pass
+    logger.info(f" Transcribe WS disconnected: {sid}")
+
+@socketio.on("start_transcription", namespace="/transcribe")
+def on_start_transcription():
+    from utils.transcribe import TranscribeSession
+    sid = request.sid
+
+    # Clean up any stale session for this socket
+    old = _transcribe_sessions.pop(sid, None)
+    if old:
+        try:
+            old.stop()
+        except Exception:
+            pass
+
+    # Accumulate full transcript for this recording session (for logging)
+    session_transcript = []
+
+    def _on_transcript(text):
+        session_transcript.append(text)
+        socketio.emit("transcript", {"text": text}, namespace="/transcribe", to=sid)
+        logger.info(f" [MIC] [{sid[:8]}] {text}")
+
+    def _on_error(msg):
+        logger.error(f" Transcription error [{sid[:8]}]: {msg}")
+        socketio.emit("transcribe_error", {"message": msg}, namespace="/transcribe", to=sid)
+
+    sess = TranscribeSession(on_transcript=_on_transcript, on_error=_on_error)
+    # Attach transcript accumulator so stop handler can log the full text
+    sess._session_transcript = session_transcript
+    sess.start()
+    _transcribe_sessions[sid] = sess
+    emit("transcription_started", {"status": "ok"})
+    logger.info(f" AssemblyAI session opened for {sid}")
+
+@socketio.on("audio_chunk", namespace="/transcribe")
+def on_audio_chunk(data):
+    sid  = request.sid
+    sess = _transcribe_sessions.get(sid)
+    if not sess:
+        return
+    # Socket.IO may deliver binary as bytes, bytearray, or a list of ints
+    if isinstance(data, (bytes, bytearray)):
+        raw = bytes(data)
+    elif isinstance(data, list):
+        raw = bytes(data)
+    else:
+        raw = data
+    sess.send_audio(raw)
+
+@socketio.on("stop_transcription", namespace="/transcribe")
+def on_stop_transcription():
+    sid  = request.sid
+    sess = _transcribe_sessions.pop(sid, None)
+    if sess:
+        # Log the full voice transcript to MongoDB in background
+        full_text = " ".join(getattr(sess, "_session_transcript", []))
+        if full_text:
+            logger.info(f" [MIC FULL] [{sid[:8]}] {full_text}")
+            visitor_id = session.get("visitor_id", "")
+            session_id = session.get("session_id", "")
+            def _save_voice_log(visitor_id, session_id, full_text):
+                try:
+                    save_chat_log(
+                        question      = full_text,
+                        answer        = "",
+                        visitor_id    = visitor_id,
+                        session_id    = session_id,
+                        response_type = "voice_input",
+                        found         = 0,
+                    )
+                    logger.debug(f" Voice input logged to MongoDB for {visitor_id}")
+                except Exception as exc:
+                    logger.warning(f"  Voice log save failed (non-fatal): {exc}")
+            Thread(target=_save_voice_log,
+                   args=(visitor_id, session_id, full_text),
+                   daemon=True).start()
+        try:
+            sess.stop()
+        except Exception:
+            pass
+    emit("transcription_stopped", {"status": "ok"})
+    logger.info(f" Transcription stopped for {sid}")
+
+
+# ---------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False,
+                 use_reloader=False, allow_unsafe_werkzeug=True)

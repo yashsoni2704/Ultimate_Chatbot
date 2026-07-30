@@ -190,3 +190,10 @@ class Config:
         "MONGO_DB_NAME",
         "Ultimate_Chatbot"
     ).strip()
+
+    # ==============================
+    # Mic Voice Input
+    # ==============================
+
+    # Seconds of silence before mic auto-closes
+    MIC_SILENCE_TIMEOUT = int(os.getenv("MIC_SILENCE_TIMEOUT", "3"))

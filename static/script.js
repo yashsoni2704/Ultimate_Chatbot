@@ -16,7 +16,31 @@ const welcomeState    = document.getElementById("welcomeState");
 const welcomeTitle    = document.getElementById("welcomeTitle");
 const welcomeSubtitle = document.getElementById("welcomeSubtitle");
 
-let msgCounter = 0;
+// Greeting chip
+const userGreeting      = document.getElementById("userGreeting");
+const userGreetingAvatar= document.getElementById("userGreetingAvatar");
+const userGreetingName  = document.getElementById("userGreetingName");
+
+// Lead capture modal
+const leadModal      = document.getElementById("leadModal");
+const leadModalClose = document.getElementById("leadModalClose");
+const leadSkipBtn    = document.getElementById("leadSkipBtn");
+const leadForm       = document.getElementById("leadForm");
+const leadName       = document.getElementById("leadName");
+const leadEmail      = document.getElementById("leadEmail");
+const leadPhone      = document.getElementById("leadPhone");
+const leadError      = document.getElementById("leadError");
+const leadSubmitBtn  = document.getElementById("leadSubmitBtn");
+
+let msgCounter       = 0;
+let questionCount    = 0;          // messages sent this session
+let leadFormShown    = false;      // only show once per session
+let leadFormDismissed= false;      // user skipped — don't re-show
+
+// ── Visitor UUID (persisted in localStorage) ──────────────────────────────
+const LS_KEY = "docmind_visitor_id";
+let visitorId = "";
+let visitorName = "";
 
 // ===============================
 // On Page Load
@@ -24,19 +48,183 @@ let msgCounter = 0;
 
 window.addEventListener("load", () => {
     questionInput.focus();
+    initVisitor();           // UUID + name handshake
     loadKnowledgeBase();
     startKbPolling();
+    wireLeadModal();
 });
+
+// ===============================
+// UUID / Visitor Handshake
+// ===============================
+
+async function initVisitor() {
+    try {
+        // Read stored UUID (may be empty on first visit)
+        const storedId = localStorage.getItem(LS_KEY) || "";
+
+        const res  = await fetch("/init-session", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ visitor_id: storedId }),
+        });
+        const data = await res.json();
+
+        if (data.status === "success") {
+            visitorId = data.visitor_id;
+
+            // Persist UUID so every future visit reuses the same identity
+            localStorage.setItem(LS_KEY, visitorId);
+
+            // If backend has a name, show greeting immediately
+            if (data.name) {
+                visitorName = data.name;
+                showGreeting(visitorName);
+                leadFormShown    = true;   // already identified — no need to ask
+                leadFormDismissed= true;
+            }
+        }
+    } catch (e) {
+        // Non-fatal — chat still works without tracking
+        console.warn("initVisitor failed:", e);
+    }
+}
+
+// ===============================
+// Greeting Chip
+// ===============================
+
+function showGreeting(name) {
+    if (!name) return;
+    const display = name.trim();
+    const initial = display.charAt(0).toUpperCase();
+
+    userGreetingAvatar.textContent = initial;
+    userGreetingName.textContent   = "Hi, " + display + "!";
+    userGreeting.style.display     = "flex";
+
+    // Animate in
+    userGreeting.classList.remove("greeting-in");
+    void userGreeting.offsetWidth;   // reflow to restart animation
+    userGreeting.classList.add("greeting-in");
+}
+
+// ===============================
+// Lead-Capture Modal Logic
+// ===============================
+
+function wireLeadModal() {
+    if (leadModalClose) leadModalClose.addEventListener("click", dismissLeadModal);
+    if (leadSkipBtn)    leadSkipBtn.addEventListener("click",    dismissLeadModal);
+    if (leadModal)      leadModal.addEventListener("click", (e) => {
+        if (e.target === leadModal) dismissLeadModal();
+    });
+    if (leadForm) leadForm.addEventListener("submit", submitLeadForm);
+
+    // Close on Escape key
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && leadModal && leadModal.style.display !== "none") {
+            dismissLeadModal();
+        }
+    });
+}
+
+function maybeShowLeadForm() {
+    if (leadFormShown || leadFormDismissed) return;
+    // Show after the 3rd question
+    if (questionCount < 3) return;
+
+    leadFormShown = true;
+    showLeadModal();
+}
+
+function showLeadModal() {
+    if (!leadModal) return;
+    leadModal.style.display = "flex";
+    // Small delay so the transition feels smooth after the bot reply appears
+    requestAnimationFrame(() => {
+        leadModal.classList.add("lead-modal-visible");
+        setTimeout(() => { if (leadName) leadName.focus(); }, 120);
+    });
+}
+
+function dismissLeadModal() {
+    if (!leadModal) return;
+    leadFormDismissed = true;
+    leadModal.classList.remove("lead-modal-visible");
+    setTimeout(() => { leadModal.style.display = "none"; }, 280);
+}
+
+async function submitLeadForm(e) {
+    e.preventDefault();
+
+    const name  = (leadName?.value  || "").trim();
+    const email = (leadEmail?.value || "").trim();
+    const phone = (leadPhone?.value || "").trim();
+
+    if (!name && !email && !phone) {
+        showLeadError("Please fill in at least one field.");
+        return;
+    }
+
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showLeadError("Please enter a valid email address.");
+        return;
+    }
+
+    hideLeadError();
+    setLeadSubmitting(true);
+
+    try {
+        const res  = await fetch("/update-visitor", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ visitor_id: visitorId, name, email, phone }),
+        });
+        const data = await res.json();
+
+        if (data.status === "success") {
+            visitorName = name || visitorName;
+            if (visitorName) showGreeting(visitorName);
+            dismissLeadModal();
+        } else {
+            showLeadError(data.message || "Something went wrong. Please try again.");
+        }
+    } catch (err) {
+        showLeadError("Network error. Please try again.");
+    } finally {
+        setLeadSubmitting(false);
+    }
+}
+
+function showLeadError(msg) {
+    if (!leadError) return;
+    leadError.textContent   = msg;
+    leadError.style.display = "block";
+}
+
+function hideLeadError() {
+    if (!leadError) return;
+    leadError.textContent   = "";
+    leadError.style.display = "none";
+}
+
+function setLeadSubmitting(loading) {
+    if (!leadSubmitBtn) return;
+    leadSubmitBtn.disabled   = loading;
+    leadSubmitBtn.innerHTML  = loading
+        ? `<span class="lead-btn-spinner"></span> Saving…`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Save &amp; Continue`;
+}
 
 // ===============================
 // Knowledge Base Polling
 // ===============================
 
 let _kbPollInterval = null;
-let _kbLastCount    = -1;   // track doc count to detect changes
+let _kbLastCount    = -1;
 
 function startKbPolling() {
-    // Poll every 10 seconds, but only when the tab is visible
     _kbPollInterval = setInterval(() => {
         if (document.visibilityState === "hidden") return;
         _pollKnowledgeBase();
@@ -49,13 +237,12 @@ function _pollKnowledgeBase() {
         .then(data => {
             const docs  = data.documents || [];
             const count = docs.length;
-            // Only re-render if something actually changed
             if (count !== _kbLastCount) {
                 _kbLastCount = count;
                 loadKnowledgeBase();
             }
         })
-        .catch(() => { /* silent — network blip, try again next tick */ });
+        .catch(() => {});
 }
 
 // ===============================
@@ -73,30 +260,25 @@ function loadKnowledgeBase() {
             kbLoading.style.display = "none";
 
             const docs = data.documents || [];
-            _kbLastCount = docs.length;   // keep poll tracker in sync
+            _kbLastCount = docs.length;
             kbCount.textContent = docs.length + (docs.length === 1 ? " doc" : " docs");
 
             if (docs.length === 0) {
                 kbEmpty.style.display = "flex";
-                // Update header badge
                 docBadgeText.textContent = "No documents loaded";
                 documentStatus.classList.remove("loaded");
-                // Update welcome message
                 welcomeTitle.textContent    = "No documents loaded yet";
                 welcomeSubtitle.textContent = "Ask your admin to upload documents to the knowledge base.";
                 return;
             }
 
-            // Build list
             kbList.innerHTML = "";
             docs.forEach(doc => renderKbItem(doc));
             kbList.style.display = "flex";
 
-            // Update header badge
             docBadgeText.textContent = docs.length + (docs.length === 1 ? " document" : " documents") + " available";
             documentStatus.classList.add("loaded");
 
-            // Update welcome message
             welcomeTitle.textContent    = "Ask me anything";
             welcomeSubtitle.textContent = "I'll answer based on the " + docs.length + " document" + (docs.length === 1 ? "" : "s") + " in the knowledge base.";
         })
@@ -184,8 +366,8 @@ function sendMessage() {
 
     addUserMessage(question);
     questionInput.value = "";
+    questionCount++;
 
-    // ── Disable send while answer is in progress, keep input typeable ──
     askBtn.disabled           = true;
     questionInput.placeholder = "Ask anything about your documents…";
 
@@ -194,20 +376,29 @@ function sendMessage() {
     fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question })
+        body: JSON.stringify({ question, visitor_id: visitorId })
     })
     .then(r => r.json())
     .then(result => {
         removeLoading();
         addBotMessage(result.status === "success" ? result.answer : "❌ " + result.message);
         _enableInput();
-        setTimeout(() => { autoScrollChat(); questionInput.focus(); }, 100);
+        setTimeout(() => {
+            autoScrollChat();
+            questionInput.focus();
+            // Try to show lead form after bot response (feels more natural)
+            maybeShowLeadForm();
+        }, 120);
     })
     .catch(err => {
         removeLoading();
         addBotMessage("❌ " + err.message);
         _enableInput();
-        setTimeout(() => { autoScrollChat(); questionInput.focus(); }, 100);
+        setTimeout(() => {
+            autoScrollChat();
+            questionInput.focus();
+            maybeShowLeadForm();
+        }, 120);
     });
 }
 
@@ -319,7 +510,7 @@ function speakMessage(id, btn) {
     utterance.pitch = 1;
 
     _setBtnPlaying(btn);
-    utterance.onend  = () => _setBtnIdle(btn);
+    utterance.onend   = () => _setBtnIdle(btn);
     utterance.onerror = () => _setBtnIdle(btn);
 
     window.speechSynthesis.speak(utterance);
@@ -344,3 +535,240 @@ function _setBtnIdle(btn) {
         </svg>
         Play`;
 }
+
+
+// ===============================================================
+// MIC / VOICE INPUT  — Web Speech API (browser-native)
+//
+// - Hold Space 3s → ring fills → mic activates
+// - Release Space before 3s → cancel
+// - Speech prints into input in real time
+// - MIC_SILENCE_TIMEOUT seconds (from .env) of silence → mic closes
+// - Click Send when ready
+// ===============================================================
+
+(function () {
+    "use strict";
+
+    const micWrapper     = document.getElementById("micWrapper");
+    const micBtn         = document.getElementById("micBtn");
+    const micRingFill    = document.getElementById("micRingFill");
+    const micStatusLabel = document.getElementById("micStatusLabel");
+    const chatInput      = document.getElementById("question");
+
+    if (!micWrapper || !micBtn || !micRingFill || !chatInput) return;
+
+    // ── Browser support ──────────────────────────────────────────
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        micBtn.title         = "Voice input not supported in this browser";
+        micBtn.style.opacity = "0.4";
+        micBtn.style.cursor  = "not-allowed";
+        return;
+    }
+
+    // ── Tuning ───────────────────────────────────────────────────
+    const RING_CIRC = 119.4;
+    const HOLD_MS   = 3000;
+    const TICK_MS   = 50;
+
+    // Silence timeout — loaded from .env via /client-config, default 3s
+    let SILENCE_MS = 3000;
+    fetch("/client-config")
+        .then(r => r.json())
+        .then(d => { if (d.mic_silence_timeout) SILENCE_MS = d.mic_silence_timeout * 1000; })
+        .catch(() => {});
+
+    // ── State ────────────────────────────────────────────────────
+    let countdownTimer = null;
+    let countdownStart = null;
+    let spaceHeld      = false;
+    let isRecording    = false;
+    let silenceTimer   = null;
+    let recognition    = null;
+    let committed      = "";   // text already permanently in input
+
+    // ── UI ───────────────────────────────────────────────────────
+    function showStatus(msg) {
+        if (!micStatusLabel) return;
+        micStatusLabel.textContent = msg;
+        micStatusLabel.classList.remove("hidden");
+    }
+    function hideStatus() {
+        if (!micStatusLabel) return;
+        micStatusLabel.textContent = "";
+        micStatusLabel.classList.add("hidden");
+    }
+    function setRing(frac) {
+        micRingFill.style.strokeDashoffset = RING_CIRC * (1 - Math.min(frac, 1));
+    }
+    function clearRing() {
+        micRingFill.style.strokeDashoffset = RING_CIRC;
+        micWrapper.classList.remove("counting");
+    }
+
+    // ── Silence timer ────────────────────────────────────────────
+    // Reset every time a final word arrives.
+    // When it fires, we own the stop — not the browser.
+    function armSilence() {
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+            if (isRecording) stopRecording();
+        }, SILENCE_MS);
+    }
+
+    // ── Recognition — attach & restart loop ──────────────────────
+    // The browser's SpeechRecognition fires onend after its own
+    // short silence (~1-2s). We restart immediately so our own
+    // SILENCE_MS timer is the only thing that actually stops the mic.
+    function attachRecognition() {
+        if (!isRecording) return;
+
+        recognition = new SpeechRecognition();
+        recognition.continuous     = true;
+        recognition.interimResults = true;
+        recognition.lang           = "en-US";
+
+        recognition.onresult = (e) => {
+            let interim   = "";
+            let finalPart = "";
+
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+                const t = e.results[i][0].transcript;
+                if (e.results[i].isFinal) finalPart += t;
+                else                      interim   += t;
+            }
+
+            // Any speech activity (interim or final) resets the silence clock
+            armSilence();
+
+            if (finalPart) {
+                const sep = committed.trimEnd() ? " " : "";
+                committed = committed.trimEnd() + sep + finalPart.trim();
+                chatInput.value = committed;
+            }
+            if (interim) {
+                const sep = committed.trimEnd() ? " " : "";
+                chatInput.value = committed.trimEnd() + sep + interim;
+            }
+        };
+        recognition.onerror = (e) => {
+            if (e.error === "aborted") return;       // we called stop() ourselves
+            if (e.error === "no-speech") {
+                restartRecognition();                // browser timed out — restart
+                return;
+            }
+            console.warn("[mic] error:", e.error);
+            stopRecording();
+        };
+
+        recognition.onend = () => {
+            // Browser ended its session — restart to keep ours alive
+            restartRecognition();
+        };
+
+        try { recognition.start(); } catch (_) {}
+    }
+
+    function restartRecognition() {
+        if (!isRecording) return;
+        setTimeout(attachRecognition, 150);   // brief gap avoids "already started"
+    }
+
+    // ── Start / stop ─────────────────────────────────────────────
+    function startRecording() {
+        if (isRecording) return;
+        isRecording = true;
+        committed   = chatInput.value;   // keep any text already typed
+
+        micWrapper.classList.remove("counting");
+        micWrapper.classList.add("recording");
+        showStatus("🎙 Listening…");
+
+        attachRecognition();
+        // Do NOT arm silence here — only start the clock once speech begins
+    }
+
+    function stopRecording() {
+        if (!isRecording) return;
+        isRecording = false;
+
+        clearTimeout(silenceTimer);
+        micWrapper.classList.remove("recording");
+        hideStatus();
+
+        if (recognition) {
+            recognition.onend   = null;    // prevent auto-restart
+            recognition.onerror = null;
+            try { recognition.stop(); } catch (_) {}
+            recognition = null;
+        }
+
+        // Log to server
+        const finalText = chatInput.value.trim();
+        if (finalText) {
+            fetch("/log-voice", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body:    JSON.stringify({ text: finalText })
+            }).catch(() => {});
+        }
+    }
+
+    // ── 3-second countdown ───────────────────────────────────────
+    function beginCountdown() {
+        countdownStart = Date.now();
+        micWrapper.classList.add("counting");
+        showStatus("Hold Space…");
+
+        countdownTimer = setInterval(() => {
+            const frac = (Date.now() - countdownStart) / HOLD_MS;
+            setRing(frac);
+            if (frac >= 1) {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+                clearRing();
+                startRecording();
+            }
+        }, TICK_MS);
+    }
+
+    function cancelCountdown() {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        clearRing();
+        hideStatus();
+    }
+
+    // ── Spacebar ─────────────────────────────────────────────────
+    document.addEventListener("keydown", (e) => {
+        if (e.code !== "Space" || e.repeat) return;
+
+        const active  = document.activeElement;
+        const inField = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
+        if (inField && chatInput.value.length > 0 && !isRecording) return;
+        if (active && active.closest(".lead-modal")) return;
+
+        e.preventDefault();
+        if (isRecording)  { stopRecording();  return; }
+        if (!spaceHeld)   { spaceHeld = true; beginCountdown(); }
+    });
+
+    document.addEventListener("keyup", (e) => {
+        if (e.code !== "Space") return;
+        spaceHeld = false;
+        if (countdownTimer) cancelCountdown();   // released before 3s → cancel
+    });
+
+    document.addEventListener("keypress", (e) => {
+        if (e.code === "Space" && (isRecording || countdownTimer)) e.preventDefault();
+    });
+
+    // ── Mic button ───────────────────────────────────────────────
+    micBtn.addEventListener("click", () => {
+        if (countdownTimer)   cancelCountdown();
+        else if (isRecording) stopRecording();
+        else                  startRecording();
+    });
+
+}());

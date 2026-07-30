@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "DocMind — Start watchers on session open",
+      "trigger": "SessionStart",
+      "description": "Launches watcher.py app and watcher.py admin in new console windows every time a Kiro session starts. The watchers monitor all .py/.html/.css/.js files and restart the Flask servers automatically on change or crash.",
+      "action": {
+        "type": "command",
+        "command": "cd /d \"C:\\Users\\Yash\\Desktop\\Ultimate_Chatbot\" && \"C:\\Users\\Yash\\Desktop\\Ultimate_Chatbot\\Yash\\Scripts\\python.exe\" -c \"import subprocess, sys; [subprocess.Popen(['C:\\\\Users\\\\Yash\\\\Desktop\\\\Ultimate_Chatbot\\\\Yash\\\\Scripts\\\\python.exe', 'watcher.py', m], cwd='C:\\\\Users\\\\Yash\\\\Desktop\\\\Ultimate_Chatbot', creationflags=subprocess.CREATE_NEW_CONSOLE) for m in ['app','admin']]\"",
+        "timeout": 15
+      }
+    }
+  ]
+}
