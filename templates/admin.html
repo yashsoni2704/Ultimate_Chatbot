@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -133,180 +133,159 @@
             ════════════════════════════════ -->
             <div id="section-kb">
 
-            <!-- ── Upload Card ── -->
-            <section class="upload-card">
-                <div class="upload-card-header">
+            <!-- ── KB Tab Bar ── -->
+            <div class="kb-tab-bar">
+                <button class="kb-tab active" id="tabDocBtn" onclick="switchKbTab('docs')">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                         <polyline points="17 8 12 3 7 8"/>
                         <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
-                    <h3>Upload Document</h3>
-                </div>
-                <!-- Drop zone -->
-                <div id="dropZone" class="drop-zone">
-                    <div class="drop-zone-inner">
-                        <div class="drop-icon-wrap" id="dropIconWrap">
-                            <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="17 8 12 3 7 8"/>
-                                <line x1="12" y1="3" x2="12" y2="15"/>
-                            </svg>
-                        </div>
-                        <p class="drop-title">Drag &amp; drop your file here</p>
-                        <p class="drop-sub">PDF, DOCX, XLSX, PPTX, CSV, TXT, RTF — or click to browse</p>
-                        <input type="file" id="fileInput"
-                               accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.rtf"
-                               style="display:none;">
-                        <button class="browse-btn" id="browseBtn">Browse File</button>
-                    </div>
-                </div>
-
-                <!-- Selected file preview -->
-                <div id="filePreview" class="file-preview" style="display:none;">
-                    <div class="file-preview-icon" id="fileTypeIcon">
-                        <!-- injected by JS -->
-                    </div>
-                    <div class="file-preview-body">
-                        <p class="file-preview-name" id="previewName">—</p>
-                        <div class="file-preview-meta">
-                            <span class="file-type-badge" id="fileTypeBadge">—</span>
-                            <span class="file-preview-size" id="previewSize">—</span>
-                        </div>
-                    </div>
-                    <button class="remove-btn" id="removeFileBtn" title="Remove">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>
-                </div>
-
-                <!-- Upload button -->
-                <button class="upload-btn" id="uploadBtn" disabled>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="17 8 12 3 7 8"/>
-                        <line x1="12" y1="3" x2="12" y2="15"/>
-                    </svg>
-                    <span id="uploadBtnText">Select a file to upload</span>
+                    Document
+                    <span class="kb-tab-count" id="docsCount">0</span>
                 </button>
-
-                <!-- Progress bar -->
-                <div id="progressWrap" class="progress-wrap" style="display:none;">
-                    <div class="progress-bar-track">
-                        <div class="progress-bar-fill" id="progressBar"></div>
-                    </div>
-                    <span class="progress-label" id="progressLabel">Processing…</span>
-                </div>
-
-                <!-- Status message -->
-                <div id="uploadStatus" class="upload-status" style="display:none;"></div>
-            </section>
-
-            <!-- ── Scrape Website Card ── -->
-            <section class="upload-card">
-                <div class="upload-card-header">
+                <button class="kb-tab" id="tabUrlBtn" onclick="switchKbTab('urls')">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="10"/>
                         <line x1="2" y1="12" x2="22" y2="12"/>
                         <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                     </svg>
-                    <h3>Scrape Website</h3>
-                </div>
-
-                <!-- URL input -->
-                <div class="url-input-wrap">
-                    <div class="url-input-row">
-                        <div class="url-input-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                            </svg>
-                        </div>
-                        <input
-                            type="url"
-                            id="scrapeUrl"
-                            class="url-input"
-                            placeholder="https://example.com/page"
-                            autocomplete="off"
-                        />
-                    </div>
-                    <p class="url-hint">Paste a public URL. The page will be fully rendered and all visible text extracted.</p>
-                </div>
-
-                <!-- Scrape button -->
-                <button class="upload-btn" id="scrapeBtn">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="2" y1="12" x2="22" y2="12"/>
-                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                    </svg>
-                    <span id="scrapeBtnText">Scrape &amp; Ingest</span>
+                    URL
+                    <span class="kb-tab-count" id="urlsCount">0</span>
                 </button>
+            </div>
 
-                <!-- Scrape progress bar -->
-                <div id="scrapeProgressWrap" class="progress-wrap" style="display:none;">
-                    <div class="progress-bar-track">
-                        <div class="progress-bar-fill" id="scrapeProgressBar"></div>
+            <!-- ── Panel 1: Document Upload (collapsible) ── -->
+            <!-- ── Tab: Document ── -->
+            <div class="kb-tab-panel" id="kbPanelDocs">
+                <section class="upload-card">
+                    <div class="upload-card-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <h3>Upload Document</h3>
                     </div>
-                    <span class="progress-label" id="scrapeProgressLabel">Scraping page…</span>
-                </div>
-
-                <!-- Scrape status message -->
-                <div id="scrapeStatus" class="upload-status" style="display:none;"></div>
-            </section>
-
-            <!-- ── Knowledge Base Table ── -->
-            <section class="kb-section">
-                <div class="kb-section-header">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-                        </svg>
-                        Ingested Documents
-                    </h3>
-                    <button class="refresh-btn" id="refreshBtn" title="Refresh list">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                        </svg>
-                        Refresh
+                    <div id="dropZone" class="drop-zone">
+                        <div class="drop-zone-inner">
+                            <div class="drop-icon-wrap" id="dropIconWrap">
+                                <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            </div>
+                            <p class="drop-title">Drag &amp; drop your file here</p>
+                            <p class="drop-sub">PDF, DOCX, XLSX, PPTX, CSV, TXT, RTF — or click to browse</p>
+                            <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.rtf" style="display:none;">
+                            <button class="browse-btn" id="browseBtn">Browse File</button>
+                        </div>
+                    </div>
+                    <div id="filePreview" class="file-preview" style="display:none;">
+                        <div class="file-preview-icon" id="fileTypeIcon"></div>
+                        <div class="file-preview-body">
+                            <p class="file-preview-name" id="previewName">—</p>
+                            <div class="file-preview-meta">
+                                <span class="file-type-badge" id="fileTypeBadge">—</span>
+                                <span class="file-preview-size" id="previewSize">—</span>
+                            </div>
+                        </div>
+                        <button class="remove-btn" id="removeFileBtn" title="Remove">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                    </div>
+                    <button class="upload-btn" id="uploadBtn" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <span id="uploadBtnText">Select a file to upload</span>
                     </button>
-                </div>
+                    <div id="progressWrap" class="progress-wrap" style="display:none;">
+                        <div class="progress-bar-track"><div class="progress-bar-fill" id="progressBar"></div></div>
+                        <span class="progress-label" id="progressLabel">Processing…</span>
+                    </div>
+                    <div id="uploadStatus" class="upload-status" style="display:none;"></div>
+                </section>
+                <section class="kb-section">
+                    <div class="kb-section-header">
+                        <h3>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                            Uploaded Documents
+                        </h3>
+                        <button class="refresh-btn" id="refreshBtn" title="Refresh">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            Refresh
+                        </button>
+                    </div>
+                    <div class="kb-search-wrap" style="margin:0 24px 14px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" id="docsSearchInput" class="kb-search-input" placeholder="Search documents…" autocomplete="off" oninput="filterDocsTable()">
+                        <button class="kb-search-clear" id="docsSearchClear" onclick="clearDocsSearch()" style="display:none;" title="Clear">✕</button>
+                    </div>
+                    <div id="docsLoading" class="kb-loading"><div class="kb-spinner"></div><span>Loading…</span></div>
+                    <div id="docsEmpty" class="kb-empty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 13h6m-3-3v6m-9 1V7a2 2 0 0 1 2-2h6l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                        <p>No documents uploaded yet</p><p class="kb-empty-sub">Upload your first file above</p>
+                    </div>
+                    <div id="docsNoResults" class="kb-empty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <p>No matching documents</p>
+                    </div>
+                    <div id="docsTableWrap" class="kb-table-wrap" style="display:none;">
+                        <table class="kb-table">
+                            <thead><tr><th>File</th><th>Type</th><th>Chunks</th><th>Ingested</th><th>Action</th></tr></thead>
+                            <tbody id="docsTableBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div><!-- /kbPanelDocs -->
 
-                <!-- Loading -->
-                <div id="kbLoading" class="kb-loading">
-                    <div class="kb-spinner"></div>
-                    <span>Loading knowledge base…</span>
-                </div>
-
-                <!-- Empty -->
-                <div id="kbEmpty" class="kb-empty" style="display:none;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M9 13h6m-3-3v6m-9 1V7a2 2 0 0 1 2-2h6l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-                    </svg>
-                    <p>No documents ingested yet</p>
-                    <p class="kb-empty-sub">Upload your first document above to get started</p>
-                </div>
-
-                <!-- Table -->
-                <div id="kbTableWrap" class="kb-table-wrap" style="display:none;">
-                    <table class="kb-table">
-                        <thead>
-                            <tr>
-                                <th>File</th>
-                                <th>Type</th>
-                                <th>Chunks</th>
-                                <th>Ingested</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="kbTableBody"></tbody>
-                    </table>
-                </div>
-            </section>
+            <!-- ── Tab: URL ── -->
+            <div class="kb-tab-panel" id="kbPanelUrls" style="display:none;">
+                <section class="upload-card">
+                    <div class="upload-card-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        <h3>Scrape Website / URL</h3>
+                    </div>
+                    <div class="url-input-wrap">
+                        <div class="url-input-row">
+                            <div class="url-input-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                            </div>
+                            <input type="url" id="scrapeUrl" class="url-input" placeholder="https://example.com/page" autocomplete="off"/>
+                        </div>
+                        <p class="url-hint">Paste a public URL. The page will be fully rendered and all visible text extracted.</p>
+                    </div>
+                    <button class="upload-btn" id="scrapeBtn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        <span id="scrapeBtnText">Scrape &amp; Ingest</span>
+                    </button>
+                    <div id="scrapeProgressWrap" class="progress-wrap" style="display:none;">
+                        <div class="progress-bar-track"><div class="progress-bar-fill" id="scrapeProgressBar"></div></div>
+                        <span class="progress-label" id="scrapeProgressLabel">Scraping page…</span>
+                    </div>
+                    <div id="scrapeStatus" class="upload-status" style="display:none;"></div>
+                </section>
+                <section class="kb-section">
+                    <div class="kb-section-header">
+                        <h3>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                            Ingested URLs
+                        </h3>
+                    </div>
+                    <div class="kb-search-wrap" style="margin:0 24px 14px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" id="urlsSearchInput" class="kb-search-input" placeholder="Search URLs…" autocomplete="off" oninput="filterUrlsTable()">
+                        <button class="kb-search-clear" id="urlsSearchClear" onclick="clearUrlsSearch()" style="display:none;" title="Clear">✕</button>
+                    </div>
+                    <div id="urlsLoading" class="kb-loading" style="display:none;"><div class="kb-spinner"></div><span>Loading…</span></div>
+                    <div id="urlsEmpty" class="kb-empty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 13h6m-3-3v6m-9 1V7a2 2 0 0 1 2-2h6l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                        <p>No URLs ingested yet</p><p class="kb-empty-sub">Paste a URL above and click Scrape &amp; Ingest</p>
+                    </div>
+                    <div id="urlsNoResults" class="kb-empty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <p>No matching URLs</p>
+                    </div>
+                    <div id="urlsTableWrap" class="kb-table-wrap" style="display:none;">
+                        <table class="kb-table">
+                            <thead><tr><th>URL</th><th>Chunks</th><th>Ingested</th><th>Action</th></tr></thead>
+                            <tbody id="urlsTableBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div><!-- /kbPanelUrls -->
 
             </div><!-- /section-kb -->
 
@@ -400,6 +379,11 @@
                             </thead>
                             <tbody id="visitorsTableBody"></tbody>
                         </table>
+                    </div>
+                    <div id="visitorsPagination" class="pagination-controls" style="display:none;">
+                        <button id="prevVisitorsPageBtn" class="pagination-button" type="button">Previous</button>
+                        <span id="visitorsPageInfo" class="pagination-info">Page 1 of 1</span>
+                        <button id="nextVisitorsPageBtn" class="pagination-button" type="button">Next</button>
                     </div>
                 </section>
             </div><!-- /section-visitors -->

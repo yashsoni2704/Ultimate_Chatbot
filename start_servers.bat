@@ -1,7 +1,9 @@
 @echo off
 setlocal EnableExtensions
+
 set "ROOT=%~dp0"
-set "PYTHON_EXE=%ROOT%Yash\Scripts\python.exe"
+set "PYTHON=%ROOT%Yash\Scripts\python.exe"
+set "QDRANT=%ROOT%qdrant.exe"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUNBUFFERED=1"
 
@@ -10,60 +12,58 @@ title DocMind - Start Servers
 echo.
 echo  ==========================================
 echo   DocMind - Starting All Servers
-echo   (auto-restart on code change or crash)
 echo  ==========================================
 echo.
 
-if not exist "%PYTHON_EXE%" (
-    echo  ERROR: Python interpreter not found at "%PYTHON_EXE%"
-    echo  Please make sure the Yash environment exists.
+if not exist "%PYTHON%" (
+    echo  ERROR: Python not found at: %PYTHON%
     pause
     exit /b 1
 )
 
-echo  Stopping any existing servers on ports 5000 and 5001...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5000 " ^| findstr "LISTENING"') do taskkill /PID %%a /F >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5001 " ^| findstr "LISTENING"') do taskkill /PID %%a /F >nul 2>&1
+if not exist "%QDRANT%" (
+    echo  ERROR: qdrant.exe not found at: %QDRANT%
+    pause
+    exit /b 1
+)
+
+echo  Killing any process on ports 5000, 5001 and 6333...
+for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":5000 " ^| findstr "LISTENING"') do (
+    taskkill /PID %%P /F >nul 2>&1
+)
+for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":5001 " ^| findstr "LISTENING"') do (
+    taskkill /PID %%P /F >nul 2>&1
+)
+for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":6333 " ^| findstr "LISTENING"') do (
+    taskkill /PID %%P /F >nul 2>&1
+)
 timeout /t 1 /nobreak >nul
 
-echo  [1/2] Starting Chat watcher (port 5000)...
-start "DocMind Chat - Port 5000" cmd /k ^
-  "cd /d ""%ROOT%"" ^
-  && set PYTHONIOENCODING=utf-8 ^
-  && set PYTHONUNBUFFERED=1 ^
-  && echo. ^
-  && echo  ====================================== ^
-  && echo   User Chat App  [AUTO-RESTART ON] ^
-  && echo   URL : http://localhost:5000 ^
-  && echo  ====================================== ^
-  && echo. ^
-  && ""%PYTHON_EXE%"" watcher.py app"
+echo  [1/3] Starting Qdrant vector database (port 6333) ...
+start "DocMind Qdrant :6333" cmd /k "cd /d "%ROOT%" && set QDRANT__STORAGE__STORAGE_PATH=%ROOT%vector_store && set QDRANT__SERVICE__HTTP_PORT=6333 && set QDRANT__LOG_LEVEL=WARN && "%QDRANT%""
+
+echo  Waiting for Qdrant to be ready on port 6333...
+:WAIT_QDRANT
+netstat -ano 2>nul | findstr ":6333 " | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+    timeout /t 2 /nobreak >nul
+    goto WAIT_QDRANT
+)
+echo  Qdrant is ready.
+
+echo  [2/3] Starting Chat server  (port 5000) ...
+start "DocMind Chat :5000" cmd /k "%PYTHON% "%ROOT%watcher.py" app"
 
 timeout /t 2 /nobreak >nul
 
-echo  [2/2] Starting Admin watcher (port 5001)...
-start "DocMind Admin - Port 5001" cmd /k ^
-  "cd /d ""%ROOT%"" ^
-  && set PYTHONIOENCODING=utf-8 ^
-  && set PYTHONUNBUFFERED=1 ^
-  && echo. ^
-  && echo  ====================================== ^
-  && echo   Admin Panel    [AUTO-RESTART ON] ^
-  && echo   URL : http://localhost:5001/admin ^
-  && echo  ====================================== ^
-  && echo. ^
-  && ""%PYTHON_EXE%"" watcher.py admin"
+echo  [3/3] Starting Admin server (port 5001) ...
+start "DocMind Admin :5001" cmd /k "%PYTHON% "%ROOT%watcher.py" admin"
 
 echo.
 echo  ==========================================
-echo   Both servers are running with auto-restart!
-echo  ------------------------------------------
-echo   User Chat  :  http://localhost:5000
-echo   Admin Panel:  http://localhost:5001/admin
-echo  ------------------------------------------
-echo   Changes to .py / .html / .css / .js
-echo   files will trigger an instant restart.
-echo   Crashes are recovered in 2 seconds.
+echo   Qdrant  :  http://localhost:6333
+echo   Chat    :  http://localhost:5000
+echo   Admin   :  http://localhost:5001/admin
 echo  ==========================================
 echo.
 exit /b 0

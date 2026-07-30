@@ -1,36 +1,30 @@
 @echo off
 setlocal EnableExtensions
-set "ROOT=%~dp0"
-title DocMind — Stop Servers
+title DocMind - Stop Servers
 
 echo.
-echo  ==========================================
-echo   DocMind — Stopping All Servers
-echo  ==========================================
-echo.
+echo  Stopping all DocMind servers...
 
-echo  Stopping DocMind chat and admin processes...
+:: Kill terminal windows by title
+taskkill /FI "WINDOWTITLE eq DocMind Qdrant :6333" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq DocMind Chat :5000"   /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq DocMind Admin :5001"  /T /F >nul 2>&1
 
-:: Stop the launched terminal windows by title
-for %%T in ("DocMind Chat - Port 5000" "DocMind Admin - Port 5001") do (
-    taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
-)
-
-:: Stop any python process running the app entry points
-for /f %%P in ('powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and ($_.CommandLine -match 'app.py' -or $_.CommandLine -match 'admin_app.py') } | Select-Object -ExpandProperty ProcessId" 2^>nul') do (
+:: Kill python processes (app, admin, watcher)
+for /f "tokens=*" %%P in ('powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and ($_.CommandLine -match 'app\.py|admin_app\.py|watcher\.py') } | Select-Object -ExpandProperty ProcessId" 2^>nul') do (
     taskkill /PID %%P /F >nul 2>&1
 )
 
-:: Stop anything still listening on the app ports
-for %%P in (5000 5001) do (
-    for /f "tokens=5" %%A in ('netstat -aon ^| findstr ":%%P " ^| findstr "LISTENING"') do (
+:: Kill qdrant.exe
+taskkill /IM qdrant.exe /F >nul 2>&1
+
+:: Kill anything still on ports 5000, 5001, 6333
+for %%P in (5000 5001 6333) do (
+    for /f "tokens=5" %%A in ('netstat -aon 2^>nul ^| findstr ":%%P " ^| findstr "LISTENING"') do (
         taskkill /PID %%A /F >nul 2>&1
     )
 )
 
-echo.
-echo  ==========================================
-echo   All DocMind servers stopped.
-echo  ==========================================
+echo  All servers stopped.
 echo.
 exit /b 0

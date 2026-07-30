@@ -1,5 +1,32 @@
+"""
+utils/embeddings.py
+~~~~~~~~~~~~~~~~~~~
+Blue/Green vector database strategy using Qdrant HTTP server mode.
+
+Qdrant runs as a standalone server (qdrant.exe) on localhost:6333.
+All Python code connects via HTTP — no file locks, no conflicts.
+Multiple processes (app.py, admin_app.py) and multiple threads can
+all connect simultaneously without any locking issues.
+
+Slot layout:
+    docmind_blue   ← one Qdrant collection
+    docmind_green  ← other Qdrant collection
+
+active_slot.json (inside QDRANT_PATH):
+    {"active": "blue"} or {"active": "green"}
+
+Flow for every add/delete:
+    1. Clone active → standby  (all existing data preserved)
+    2. Modify standby           (add or delete)
+    3. Switch pointer           (atomic JSON write, ~1ms)
+    Users query active throughout — zero interruption.
+"""
+
+from __future__ import annotations
+
 import json
 import os
+import threading
 from datetime import datetime
 
 from config import Config
@@ -7,22 +34,43 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── Registry file path ───────────────────────────────────────────────────────
-# Stored inside the Qdrant data folder so everything stays together
-REGISTRY_FILE = os.path.join(Config.QDRANT_PATH, "registry.json")
+# ── Slot names ────────────────────────────────────────────────────────────────
+BLUE  = "blue"
+GREEN = "green"
+
+# ── File paths ────────────────────────────────────────────────────────────────
+REGISTRY_FILE    = os.path.join(Config.QDRANT_PATH, "registry.json")
+ACTIVE_SLOT_FILE = os.path.join(Config.QDRANT_PATH, Config.ACTIVE_SLOT_FILE)
+
+# ── Serialise writes — only one add/delete pipeline at a time ────────────────
+_write_lock = threading.Lock()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Registry helpers  (unchanged interface — all callers depend on these)
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# Qdrant HTTP client helper
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _get_qdrant_client():
+    """Return a QdrantClient connected to the Qdrant HTTP server.
+    Multiple callers get independent connections — no file lock, no conflict.
+    """
+    from qdrant_client import QdrantClient
+    return QdrantClient(
+        host    = Config.QDRANT_HOST,
+        port    = Config.QDRANT_PORT,
+        timeout = 60,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Registry helpers
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _load_registry() -> list:
-    """Return the list of ingested document records."""
     if os.path.exists(REGISTRY_FILE):
         try:
             with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Filter out any null/malformed entries
                 return [r for r in data if r is not None and isinstance(r, dict)]
         except (json.JSONDecodeError, IOError):
             return []
@@ -36,16 +84,13 @@ def _save_registry(records: list) -> None:
 
 
 def _is_already_ingested(filename: str) -> bool:
-    for rec in _load_registry():
-        if rec.get("filename") == filename:
-            return True
-    return False
+    return any(r.get("filename") == filename for r in _load_registry())
 
 
 def _register_document(filename: str, file_path: str, chunk_count: int) -> None:
-    records = _load_registry()
-    # For URLs don't resolve as filesystem path
-    stored_path = file_path if (file_path.startswith("http://") or file_path.startswith("https://")) else os.path.abspath(file_path)
+    records     = _load_registry()
+    stored_path = (file_path if file_path.startswith(("http://", "https://"))
+                   else os.path.abspath(file_path))
     records.append({
         "filename":    filename,
         "path":        stored_path,
@@ -56,195 +101,357 @@ def _register_document(filename: str, file_path: str, chunk_count: int) -> None:
 
 
 def get_all_documents() -> list:
-    """Public helper — returns all registry records (used by Flask routes)."""
     return _load_registry()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Qdrant client helper
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# Slot helpers
+# ═════════════════════════════════════════════════════════════════════════════
 
-def _get_qdrant_client():
-    """Return a local persistent QdrantClient pointed at QDRANT_PATH."""
-    from qdrant_client import QdrantClient
+def _collection_name(slot: str) -> str:
+    if slot == BLUE:
+        return Config.QDRANT_COLLECTION_BLUE
+    if slot == GREEN:
+        return Config.QDRANT_COLLECTION_GREEN
+    raise ValueError(f"Unknown slot: {slot!r}")
+
+
+def _read_active_slot() -> str:
+    if os.path.exists(ACTIVE_SLOT_FILE):
+        try:
+            with open(ACTIVE_SLOT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                slot = data.get("active", BLUE)
+                if slot in (BLUE, GREEN):
+                    return slot
+        except (json.JSONDecodeError, IOError):
+            pass
+    _migrate_legacy_if_needed()
+    return BLUE
+
+
+def _write_active_slot(slot: str) -> None:
     os.makedirs(Config.QDRANT_PATH, exist_ok=True)
-    return QdrantClient(path=Config.QDRANT_PATH)
+    tmp = ACTIVE_SLOT_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"active": slot, "updated_at": datetime.now().isoformat()}, f)
+    os.replace(tmp, ACTIVE_SLOT_FILE)
+    logger.info(f"🔀 Active slot → {slot.upper()} ({_collection_name(slot)})")
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Public: delete chunks for a single document  ← KEY NEW FUNCTION
-# ════════════════════════════════════════════════════════════════════════════
+def _standby_slot(active: str) -> str:
+    return GREEN if active == BLUE else BLUE
 
-def delete_document_chunks(filename: str) -> int:
-    """
-    Surgically remove all vectors whose metadata 'source' field matches
-    *filename* from the Qdrant collection.
 
-    Uses Qdrant's native payload filter — no rebuild, no re-embedding,
-    all other documents remain completely untouched.
+def get_active_collection_name() -> str:
+    return _collection_name(_read_active_slot())
 
-    Returns the number of points deleted (0 if none found).
-    """
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-    client = _get_qdrant_client()
+# ═════════════════════════════════════════════════════════════════════════════
+# Legacy migration  (runs once — converts old "docmind" → "docmind_blue")
+# ═════════════════════════════════════════════════════════════════════════════
 
-    # Check collection exists
-    collections = [c.name for c in client.get_collections().collections]
-    if Config.QDRANT_COLLECTION_NAME not in collections:
-        logger.warning(f"Collection '{Config.QDRANT_COLLECTION_NAME}' not found — nothing to delete.")
+def _migrate_legacy_if_needed() -> None:
+    try:
+        client   = _get_qdrant_client()
+        existing = {c.name for c in client.get_collections().collections}
+        legacy   = Config.QDRANT_COLLECTION_NAME
+        blue_c   = Config.QDRANT_COLLECTION_BLUE
+        green_c  = Config.QDRANT_COLLECTION_GREEN
+
+        if legacy not in existing:
+            _write_active_slot(BLUE)
+            return
+        if blue_c in existing or green_c in existing:
+            if not os.path.exists(ACTIVE_SLOT_FILE):
+                _write_active_slot(BLUE)
+            return
+
+        logger.info(f"🔄 Migrating legacy '{legacy}' → '{blue_c}' ...")
+        _clone_collection(client, src=legacy, dst=blue_c)
+        _write_active_slot(BLUE)
+        logger.info("✅ Migration complete.")
+    except Exception as exc:
+        logger.warning(f"⚠️  Legacy migration skipped: {exc}")
+        try:
+            _write_active_slot(BLUE)
+        except Exception:
+            pass
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Clone helper — copies all vectors from src → dst via HTTP
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _clone_collection(client, src: str, dst: str) -> int:
+    from qdrant_client.models import Distance, VectorParams, PointStruct
+
+    existing = {c.name for c in client.get_collections().collections}
+
+    if src not in existing:
+        # Active is empty (first ever upload) — just delete dst if it exists
+        if dst in existing:
+            client.delete_collection(dst)
+        logger.info(f"📋 Source '{src}' is empty — standby will be created fresh")
         return 0
 
-    # Qdrant stores LangChain metadata under the key "metadata"
-    # LangChain sets doc.metadata["source"] = file_path, so we match on
-    # both the bare filename and any path ending with the filename.
-    # We use the "source" key inside the nested metadata payload.
-    delete_filter = Filter(
-        must=[
-            FieldCondition(
-                key="metadata.source",
-                match=MatchValue(value=filename)
-            )
-        ]
+    # Read vector config from source
+    src_info    = client.get_collection(src)
+    vectors_cfg = src_info.config.params.vectors
+    if hasattr(vectors_cfg, "size"):
+        vector_size = vectors_cfg.size
+    elif isinstance(vectors_cfg, dict):
+        first       = next(iter(vectors_cfg.values()))
+        vector_size = first.size
+    else:
+        vector_size = 1024
+
+    # Recreate dst with same config
+    if dst in existing:
+        client.delete_collection(dst)
+    client.create_collection(
+        collection_name = dst,
+        vectors_config  = vectors_cfg,
     )
 
-    # Count before delete for logging
-    before = client.count(
-        collection_name=Config.QDRANT_COLLECTION_NAME,
-        count_filter=delete_filter,
-        exact=True,
-    ).count
+    # Stream all points src → dst in batches of 256
+    BATCH = 256
+    offset = None
+    total  = 0
 
-    if before == 0:
-        # Try matching by full absolute path stored in registry
-        records = _load_registry()
-        matching = [r for r in records if r.get("filename") == filename]
-        if matching:
-            abs_path = matching[0].get("path", "")
-            delete_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="metadata.source",
-                        match=MatchValue(value=abs_path)
-                    )
-                ]
-            )
-            before = client.count(
-                collection_name=Config.QDRANT_COLLECTION_NAME,
-                count_filter=delete_filter,
-                exact=True,
-            ).count
+    while True:
+        results, next_offset = client.scroll(
+            collection_name = src,
+            limit           = BATCH,
+            offset          = offset,
+            with_vectors    = True,
+            with_payload    = True,
+        )
+        if not results:
+            break
+        points = [PointStruct(id=p.id, vector=p.vector, payload=p.payload)
+                  for p in results]
+        client.upsert(collection_name=dst, points=points)
+        total  += len(points)
+        offset  = next_offset
+        if next_offset is None:
+            break
 
-    client.delete(
-        collection_name=Config.QDRANT_COLLECTION_NAME,
-        points_selector=delete_filter,
-    )
-
-    logger.info(f"🗑️  Deleted {before} vector(s) for '{filename}' from Qdrant")
-    return before
+    logger.info(f"📋 Cloned {total} vectors  {src} → {dst}")
+    return total
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# Public: delete chunks
+# ═════════════════════════════════════════════════════════════════════════════
+
+def delete_document_chunks(filename: str) -> int:
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+    with _write_lock:
+        active      = _read_active_slot()
+        standby     = _standby_slot(active)
+        active_col  = _collection_name(active)
+        standby_col = _collection_name(standby)
+        client      = _get_qdrant_client()
+
+        logger.info(f"🗑️  Delete: active={active.upper()} standby={standby.upper()}")
+
+        # Step 1 — clone
+        logger.info("Step 1/3 — Cloning active → standby …")
+        _clone_collection(client, src=active_col, dst=standby_col)
+
+        # Step 2 — delete from standby
+        logger.info(f"Step 2/3 — Deleting '{filename}' from standby …")
+        delete_filter = Filter(must=[
+            FieldCondition(key="metadata.source", match=MatchValue(value=filename))
+        ])
+        before = client.count(collection_name=standby_col,
+                              count_filter=delete_filter, exact=True).count
+        if before == 0:
+            records  = _load_registry()
+            matching = [r for r in records if r.get("filename") == filename]
+            if matching:
+                abs_path = matching[0].get("path", "")
+                delete_filter = Filter(must=[
+                    FieldCondition(key="metadata.source",
+                                   match=MatchValue(value=abs_path))
+                ])
+                before = client.count(collection_name=standby_col,
+                                      count_filter=delete_filter, exact=True).count
+
+        client.delete(collection_name=standby_col, points_selector=delete_filter)
+        logger.info(f"   Removed {before} vector(s) for '{filename}'")
+
+        # Step 3 — switch
+        logger.info("Step 3/3 — Switching …")
+        _write_active_slot(standby)
+        logger.info(f"✅ Delete complete — new active: {standby.upper()}")
+        return before
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # EmbeddingManager
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 
 class EmbeddingManager:
 
     def __init__(self):
-        from langchain_community.embeddings import OllamaEmbeddings
+        from langchain_ollama import OllamaEmbeddings
         logger.info(f"Initializing embedding model: {Config.EMBEDDING_MODEL}")
         self.embedding_model = OllamaEmbeddings(model=Config.EMBEDDING_MODEL)
         logger.info("✅ Embedding model initialized")
 
-    # ── Create / add to vector store ────────────────────────────────────────
+    def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """
+        Call Ollama /api/embed directly via requests.
+        Thread-safe, no LangChain overhead, no subprocess.
+        """
+        import requests as _req
+        resp = _req.post(
+            "http://127.0.0.1:11434/api/embed",
+            json={"model": Config.EMBEDDING_MODEL, "input": texts},
+            timeout=300,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama returns {"embeddings": [[...]]} or {"embedding": [...]} depending on version
+        if "embeddings" in data:
+            return data["embeddings"]
+        # Single text fallback
+        return [data["embedding"]]
 
     def create_vector_store(self, chunks, source_path: str = ""):
-        """
-        Embed *chunks* and ADD them to the Qdrant collection.
-        If the collection doesn't exist yet it is created automatically.
-
-        Parameters
-        ----------
-        chunks      : list of LangChain Document objects
-        source_path : original file path — used for dedup check and registry
-        """
+        """Add chunks via blue/green pipeline. No file locks — HTTP only."""
         from langchain_qdrant import QdrantVectorStore
 
-        filename = os.path.basename(source_path) if source_path else ""
+        filename = (source_path if source_path.startswith(("http://", "https://"))
+                    else os.path.basename(source_path)) if source_path else ""
 
-        # For URLs, os.path.basename returns the last path segment which is
-        # not a useful key — use the full URL as the filename identifier
-        if source_path and (source_path.startswith("http://") or source_path.startswith("https://")):
-            filename = source_path
-
-        # ── Duplicate guard ────────────────────────────────────────────────
         if filename and _is_already_ingested(filename):
-            logger.warning(f"⚠️  '{filename}' is already in the knowledge base — skipping.")
+            logger.warning(f"⚠️  '{filename}' already in knowledge base — skipping.")
             return None
 
-        logger.info("")
-        logger.info("Step 1️⃣  Generating embeddings...")
-        logger.info(f"  Chunks      : {len(chunks)}")
-        logger.info(f"  Model       : {Config.EMBEDDING_MODEL}")
-        logger.info(f"  Source file : {filename or 'unknown'}")
-        logger.info(f"  Timestamp   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if not chunks:
+            raise ValueError(
+                f"Cannot embed empty chunk list for '{filename or 'unknown'}'. "
+                "No content was extracted from the document."
+            )
 
-        os.makedirs(Config.QDRANT_PATH, exist_ok=True)
+        with _write_lock:
+            active      = _read_active_slot()
+            standby     = _standby_slot(active)
+            active_col  = _collection_name(active)
+            standby_col = _collection_name(standby)
+            client      = _get_qdrant_client()
 
-        # QdrantVectorStore.from_documents creates the collection if absent,
-        # or ADDS to it if it already exists — exactly what we want.
-        vectorstore = QdrantVectorStore.from_documents(
-            documents=chunks,
-            embedding=self.embedding_model,
-            path=Config.QDRANT_PATH,
-            collection_name=Config.QDRANT_COLLECTION_NAME,
-        )
+            logger.info(f"\n📥 Add: active={active.upper()} standby={standby.upper()}")
+            logger.info(f"   File: {filename or 'unknown'}  Chunks: {len(chunks)}")
 
-        logger.info(f"✅ Embeddings done — {len(chunks)} vectors added to Qdrant")
+            # Step 1 — clone active → standby
+            logger.info("Step 1/3 — Cloning active → standby …")
+            _clone_collection(client, src=active_col, dst=standby_col)
 
-        # ── Register document ──────────────────────────────────────────────
-        if filename:
-            _register_document(filename, source_path, len(chunks))
-            logger.info(f"✅ Registered '{filename}' in knowledge base registry")
+            # Step 2 — embed into standby in batches via direct Qdrant HTTP upsert.
+            # We call Ollama for embeddings directly and upsert via qdrant_client
+            # to avoid QdrantVectorStore loading the model into a second process.
+            logger.info("Step 2/3 — Embedding chunks into standby …")
 
-        logger.info(f"✅ Qdrant store at: {os.path.abspath(Config.QDRANT_PATH)}")
-        return vectorstore
+            from qdrant_client.models import Distance, VectorParams, PointStruct
+            import uuid as _uuid
 
-    # ── Load existing vector store ──────────────────────────────────────────
+            BATCH_SIZE    = 8
+            total_done    = 0
+            total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
+
+            # Get vector size by embedding one sample text directly via Ollama HTTP
+            sample_vecs = self._embed_texts([chunks[0].page_content])
+            vector_size = len(sample_vecs[0])
+
+            existing_cols = {c.name for c in client.get_collections().collections}
+            if standby_col not in existing_cols:
+                client.create_collection(
+                    collection_name = standby_col,
+                    vectors_config  = VectorParams(size=vector_size, distance=Distance.COSINE),
+                )
+                logger.info(f"   Created collection '{standby_col}' (dim={vector_size})")
+
+            for batch_num, start in enumerate(range(0, len(chunks), BATCH_SIZE), start=1):
+                batch   = chunks[start : start + BATCH_SIZE]
+                texts   = [c.page_content for c in batch]
+                vectors = self._embed_texts(texts)
+
+                points = [
+                    PointStruct(
+                        id      = _uuid.uuid4().hex,
+                        vector  = vec,
+                        payload = {
+                            "page_content": chunk.page_content,
+                            "metadata":     chunk.metadata,
+                        },
+                    )
+                    for chunk, vec in zip(batch, vectors)
+                ]
+                client.upsert(collection_name=standby_col, points=points)
+                total_done += len(batch)
+                logger.info(f"   Batch {batch_num}/{total_batches}: {len(batch)} chunks  ({total_done}/{len(chunks)} total)")
+
+            logger.info(f"   ✅ {total_done} vectors embedded into {standby_col}")
+
+            # Step 3 — switch
+            logger.info("Step 3/3 — Switching active slot …")
+            _write_active_slot(standby)
+
+            if filename:
+                _register_document(filename, source_path, len(chunks))
+                logger.info(f"   ✅ Registered '{filename}'")
+
+            logger.info(f"✅ Add complete — new active: {standby.upper()}")
+
+        return self.load_vector_store()
 
     def load_vector_store(self):
-        """Return a LangChain-compatible QdrantVectorStore for querying."""
+        """Return QdrantVectorStore pointed at active slot via HTTP."""
         from langchain_qdrant import QdrantVectorStore
 
-        client = _get_qdrant_client()
-        collections = [c.name for c in client.get_collections().collections]
+        active_col = get_active_collection_name()
+        client     = _get_qdrant_client()
+        existing   = {c.name for c in client.get_collections().collections}
 
-        if Config.QDRANT_COLLECTION_NAME not in collections:
-            raise Exception("No documents have been processed yet. Please upload a document first.")
+        if active_col not in existing:
+            raise Exception(
+                "No documents have been processed yet. Please upload a document first."
+            )
 
         return QdrantVectorStore(
-            client=client,
-            collection_name=Config.QDRANT_COLLECTION_NAME,
-            embedding=self.embedding_model,
+            client          = client,
+            collection_name = active_col,
+            embedding       = self.embedding_model,
         )
-
-    # ── Helpers ─────────────────────────────────────────────────────────────
 
     def vector_store_exists(self) -> bool:
         try:
-            client = _get_qdrant_client()
-            collections = [c.name for c in client.get_collections().collections]
-            return Config.QDRANT_COLLECTION_NAME in collections
+            client   = _get_qdrant_client()
+            existing = {c.name for c in client.get_collections().collections}
+            return get_active_collection_name() in existing
         except Exception:
             return False
 
     def delete_vector_store(self) -> bool:
-        """Drop the entire collection (used for full reset only)."""
+        """Drop both collections and reset to clean state."""
         try:
             client = _get_qdrant_client()
-            client.delete_collection(Config.QDRANT_COLLECTION_NAME)
-            logger.info(f"🗑️  Dropped Qdrant collection '{Config.QDRANT_COLLECTION_NAME}'")
+            for slot in (BLUE, GREEN):
+                col = _collection_name(slot)
+                try:
+                    client.delete_collection(col)
+                    logger.info(f"🗑️  Dropped '{col}'")
+                except Exception:
+                    pass
+            _write_active_slot(BLUE)
+            _save_registry([])
+            logger.info("🗑️  Full reset complete")
             return True
-        except Exception as e:
-            logger.error(f"Failed to drop collection: {e}")
+        except Exception as exc:
+            logger.error(f"Failed to reset: {exc}")
             return False

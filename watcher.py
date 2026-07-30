@@ -94,10 +94,17 @@ class ManagedServer:
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUNBUFFERED"] = "1"
             log.info(f"[{self.label}]  Starting {self.script.name} …")
+
+            # Open a per-restart stderr log so crashes are never silent
+            crash_log = open(
+                str(ROOT / "logs" / f"crash_{self.script.stem}.log"),
+                "a", encoding="utf-8"
+            )
             self._proc = subprocess.Popen(
                 [PYTHON, str(self.script)],
-                cwd=str(ROOT),
-                env=env,
+                cwd    = str(ROOT),
+                env    = env,
+                stderr = crash_log,
             )
 
     def _kill(self):

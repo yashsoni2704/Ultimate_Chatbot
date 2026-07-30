@@ -1,0 +1,10 @@
+storage:
+  storage_path: ./vector_store
+
+service:
+  host: 0.0.0.0
+  http_port: 6333
+  grpc_port: 6334
+  enable_cors: true
+
+log_level: WARN

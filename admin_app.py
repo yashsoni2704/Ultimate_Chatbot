@@ -6,6 +6,7 @@ Responsibilities:
   - Serve the admin UI         (GET  /admin/)
   - Accept file uploads        (POST /admin/load-document)
   - Scrape + ingest URL        (POST /admin/load-url)
+  - Job status polling         (GET  /admin/job/<job_id>)
   - List ingested docs         (GET  /admin/documents)
   - Delete a document          (POST /admin/delete-document)
   - Analytics — chat stats     (GET  /admin/api/stats)
@@ -13,13 +14,17 @@ Responsibilities:
   - Analytics — visitors       (GET  /admin/api/visitors)
   - Analytics — bookings       (GET  /admin/api/bookings)
   - Health check               (GET  /admin/health)
+
+Heavy ingestion work (OCR + embedding) runs in a background thread so the
+HTTP request never times out.  The browser polls /admin/job/<id> every 2s.
 """
 
 import os
 import json
+import uuid
+import threading
 from datetime import datetime
 from functools import wraps
-from threading import Thread
 
 from flask import Flask, render_template, request, jsonify, Response
 from werkzeug.utils import secure_filename
@@ -54,10 +59,45 @@ admin_app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(Config.QDRANT_PATH, exist_ok=True)
 
-# ── Basic Auth ────────────────────────────────────────────────────────────────
-# Credentials are read from .env.  If either is blank the panel still starts
-# but logs a warning — useful for local dev, not acceptable in production.
 
+# ════════════════════════════════════════════════════════════════════════════
+# Background job store
+# ════════════════════════════════════════════════════════════════════════════
+
+# job_id → { "status": "running"|"done"|"error", "message": str, "documents": list }
+_jobs: dict = {}
+_jobs_lock  = threading.Lock()
+
+
+def _new_job() -> str:
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "running", "message": "", "documents": []}
+    return job_id
+
+
+def _finish_job(job_id: str, message: str) -> None:
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status":    "done",
+            "message":   message,
+            "documents": get_all_documents(),
+        }
+    logger.info(f"  Job {job_id[:8]} done: {message}")
+
+
+def _fail_job(job_id: str, error: str) -> None:
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "error", "message": error, "documents": []}
+    logger.error(f"  Job {job_id[:8]} failed: {error}")
+
+
+def _get_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        return _jobs.get(job_id)
+
+
+# ── Basic Auth ────────────────────────────────────────────────────────────────
 _ADMIN_USER = os.getenv("ADMIN_USERNAME", "").strip()
 _ADMIN_PASS = os.getenv("ADMIN_PASSWORD", "").strip()
 
@@ -69,14 +109,12 @@ if not _ADMIN_USER or not _ADMIN_PASS:
 
 
 def _check_auth(username: str, password: str) -> bool:
-    """Return True only when credentials match and are non-empty."""
     if not _ADMIN_USER or not _ADMIN_PASS:
-        return True   # auth disabled — dev mode
+        return True
     return username == _ADMIN_USER and password == _ADMIN_PASS
 
 
 def _auth_required(f):
-    """Decorator: demand HTTP Basic Auth on every admin route."""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth = request.authorization
@@ -92,7 +130,6 @@ def _auth_required(f):
 
 @admin_app.before_request
 def _require_admin_auth():
-    """Protect every route except /admin/health."""
     if request.path == "/admin/health":
         return
     auth = request.authorization
@@ -106,17 +143,17 @@ def _require_admin_auth():
             {"WWW-Authenticate": 'Basic realm="DocMind Admin"'},
         )
 
+
 # ── MongoDB startup ───────────────────────────────────────────────────────────
 def _initialize_db_startup() -> None:
     try:
-        # Quick check with timeout
         get_db().command("ping", maxTimeMS=2000)
         ensure_indexes()
         logger.info(" MongoDB ready (admin)")
     except Exception as _e:
         logger.warning(f"  MongoDB unavailable at startup: {_e}")
 
-Thread(target=_initialize_db_startup, daemon=True).start()
+threading.Thread(target=_initialize_db_startup, daemon=True).start()
 
 logger.info("  ADMIN PANEL STARTED")
 logger.info(f"Timestamp    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -147,26 +184,41 @@ def admin_home():
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# JOB POLLING
+# ════════════════════════════════════════════════════════════════════════════
+
+@admin_app.route("/admin/job/<job_id>", methods=["GET"])
+def admin_job_status(job_id):
+    """Poll the status of a background ingestion job."""
+    job = _get_job(job_id)
+    if job is None:
+        return jsonify({"status": "error", "message": "Job not found."}), 404
+    return jsonify(job)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # DOCUMENT MANAGEMENT
 # ════════════════════════════════════════════════════════════════════════════
 
 @admin_app.route("/admin/load-document", methods=["POST"])
 def admin_load_document():
+    """
+    Accept a file upload, save it, then kick off a background ingestion job.
+    Returns 202 immediately with a job_id the browser can poll.
+    """
     try:
         if "file" not in request.files:
             return jsonify({"status": "error", "message": "No file in request."}), 400
 
         file = request.files["file"]
-
         if file.filename == "":
             return jsonify({"status": "error", "message": "No file selected."}), 400
 
         filename = secure_filename(file.filename)
-
         if not _allowed_file(filename):
             exts = ", ".join(sorted(Config.ALLOWED_EXTENSIONS)).upper()
             return jsonify({
-                "status": "error",
+                "status":  "error",
                 "message": f"Unsupported file type. Supported formats: {exts}"
             }), 400
 
@@ -174,29 +226,29 @@ def admin_load_document():
         file.save(save_path)
         logger.info(f" Admin uploaded: {filename}")
 
-        if Config.LANGCHAIN_TRACING_V2:
-            from langsmith import trace as ls_trace
-            with ls_trace(
-                name=f"admin_ingest:{filename}",
-                run_type="chain",
-                project_name=Config.LANGCHAIN_PROJECT,
-                tags=["admin", "ingestion", "docmind"],
-                metadata={
-                    "filename": filename,
-                    "source":   "admin_panel",
-                    "endpoint": "/admin/load-document",
-                    "app":      "admin",
-                },
-            ):
-                message = process_document(save_path)
-        else:
-            message = process_document(save_path)
+        job_id = _new_job()
 
-        return jsonify({
-            "status":    "success",
-            "message":   message,
-            "documents": get_all_documents()
-        })
+        def _run():
+            try:
+                if Config.LANGCHAIN_TRACING_V2:
+                    from langsmith import trace as ls_trace
+                    with ls_trace(
+                        name=f"admin_ingest:{filename}",
+                        run_type="chain",
+                        project_name=Config.LANGCHAIN_PROJECT,
+                        tags=["admin", "ingestion", "docmind"],
+                        metadata={"filename": filename, "source": "admin_panel"},
+                    ):
+                        message = process_document(save_path)
+                else:
+                    message = process_document(save_path)
+                _finish_job(job_id, message)
+            except Exception as exc:
+                _fail_job(job_id, str(exc))
+
+        threading.Thread(target=_run, daemon=True, name=f"ingest-{filename}").start()
+
+        return jsonify({"status": "accepted", "job_id": job_id}), 202
 
     except Exception as e:
         logger.error(f" Admin upload error: {str(e)}")
@@ -205,48 +257,49 @@ def admin_load_document():
 
 @admin_app.route("/admin/load-url", methods=["POST"])
 def admin_load_url():
+    """
+    Accept a URL, validate it, then kick off a background ingestion job.
+    Returns 202 immediately with a job_id the browser can poll.
+    Heavy work (download + OCR + embed) happens in a background thread.
+    """
     try:
         data = request.get_json()
         if not data or not data.get("url"):
             return jsonify({"status": "error", "message": "url is required."}), 400
 
         url = data["url"].strip()
-
         if not (url.startswith("http://") or url.startswith("https://")):
             return jsonify({
-                "status": "error",
+                "status":  "error",
                 "message": "Invalid URL. Must start with http:// or https://"
             }), 400
 
         logger.info(f" Admin URL ingestion requested: {url}")
 
-        if Config.LANGCHAIN_TRACING_V2:
-            from langsmith import trace as ls_trace
-            with ls_trace(
-                name=f"admin_ingest_url:{url}",
-                run_type="chain",
-                project_name=Config.LANGCHAIN_PROJECT,
-                tags=["admin", "ingestion", "url", "docmind"],
-                metadata={
-                    "url":      url,
-                    "source":   "admin_panel",
-                    "endpoint": "/admin/load-url",
-                    "app":      "admin",
-                },
-            ):
-                message = load_url(url)
-        else:
-            message = load_url(url)
+        job_id = _new_job()
 
-        return jsonify({
-            "status":    "success",
-            "message":   message,
-            "documents": get_all_documents()
-        })
+        def _run():
+            try:
+                if Config.LANGCHAIN_TRACING_V2:
+                    from langsmith import trace as ls_trace
+                    with ls_trace(
+                        name=f"admin_ingest_url:{url}",
+                        run_type="chain",
+                        project_name=Config.LANGCHAIN_PROJECT,
+                        tags=["admin", "ingestion", "url", "docmind"],
+                        metadata={"url": url, "source": "admin_panel"},
+                    ):
+                        message = load_url(url)
+                else:
+                    message = load_url(url)
+                _finish_job(job_id, message)
+            except Exception as exc:
+                _fail_job(job_id, str(exc))
 
-    except ValueError as e:
-        logger.warning(f"  URL scrape quality check failed: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
+        threading.Thread(target=_run, daemon=True, name=f"ingest-url").start()
+
+        return jsonify({"status": "accepted", "job_id": job_id}), 202
+
     except Exception as e:
         logger.error(f" Admin URL ingestion error: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -317,13 +370,6 @@ def admin_delete_document():
 
 @admin_app.route("/admin/api/stats", methods=["GET"])
 def api_stats():
-    """
-    Combined dashboard stats:
-      - chat counts by type
-      - unique visitors / users
-      - total documents + chunks
-      - total bookings + visitors
-    """
     try:
         chat   = get_chat_stats()
         docs   = get_all_documents()
@@ -336,17 +382,14 @@ def api_stats():
         return jsonify({
             "status": "success",
             "stats": {
-                # Chat
                 "total_chats":       chat["total"],
                 "rag_chats":         chat["rag"],
                 "faq_chats":         chat["faq"],
                 "smalltalk_chats":   chat["smalltalk"],
                 "unique_visitors":   chat["unique_visitors"],
                 "unique_users":      chat["unique_users"],
-                # Documents
                 "total_documents":   len(docs),
                 "total_chunks":      total_chunks,
-                # Other
                 "total_visitors":    visitors_col.count_documents({}),
                 "total_bookings":    bookings_col.count_documents({}),
                 "total_users":       users_col.count_documents({}),
@@ -359,11 +402,6 @@ def api_stats():
 
 @admin_app.route("/admin/api/chat-logs", methods=["GET"])
 def api_chat_logs():
-    """
-    Recent chat logs with page-based pagination.
-    GET /admin/api/chat-logs?page=1
-    Enriches each log with visitor name from the visitors collection.
-    """
     try:
         page  = max(int(request.args.get("page", 1)), 1)
         limit = 10
@@ -371,7 +409,6 @@ def api_chat_logs():
         logs  = get_recent_chat_logs(limit=limit, skip=skip)
         total = get_db()["chat_logs"].count_documents({})
 
-        # Enrich logs with visitor name — bulk-fetch unique visitor_ids
         visitor_ids = list({log.get("visitor_id", "") for log in logs if log.get("visitor_id")})
         visitor_names = {}
         if visitor_ids:
@@ -402,10 +439,6 @@ def api_chat_logs():
 
 @admin_app.route("/admin/api/visitors", methods=["GET"])
 def api_visitors():
-    """
-    Recent visitor records with IP + geo + device info.
-    GET /admin/api/visitors?limit=100
-    """
     try:
         limit    = int(request.args.get("limit", 100))
         limit    = min(limit, 500)
@@ -422,7 +455,6 @@ def api_visitors():
 
 @admin_app.route("/admin/api/bookings", methods=["GET"])
 def api_bookings():
-    """All bookings from old + new data."""
     try:
         bookings = get_all_bookings()
         return jsonify({
@@ -437,7 +469,6 @@ def api_bookings():
 
 @admin_app.route("/admin/api/users", methods=["GET"])
 def api_users():
-    """Registered users (passwords excluded)."""
     try:
         users = get_all_users()
         return jsonify({

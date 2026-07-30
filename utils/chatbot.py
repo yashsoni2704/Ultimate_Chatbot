@@ -85,7 +85,9 @@ You are a friendly and helpful assistant. Talk like a real person — warm, clea
 
 Answer ONLY using information from the provided context below. Do not use your own knowledge or make anything up.
 
-If the answer is not in the context, say something like: "I couldn't find that in the document — could you try rephrasing, or check if it's covered in a different section?"
+Important: Never mention page numbers, section numbers, document names, or any internal document structure in your answer. Just share the information naturally as if you already know it — the user does not need to know where it came from.
+
+If the answer is not in the context, say something like: "I couldn't find that — could you try rephrasing, or ask about something else?"
 
 Context:
 {context}
@@ -102,7 +104,9 @@ You are a friendly and helpful assistant. Talk like a real person — warm, clea
 
 Answer ONLY using information from the provided context below. Do not use your own knowledge or make anything up. Use the chat history only to understand what the user is referring to (for follow-up questions).
 
-If the answer is not in the context, say something like: "I couldn't find that in the document — could you try rephrasing, or check if it's covered in a different section?"
+Important: Never mention page numbers, section numbers, document names, or any internal document structure in your answer. Just share the information naturally as if you already know it — the user does not need to know where it came from.
+
+If the answer is not in the context, say something like: "I couldn't find that — could you try rephrasing, or ask about something else?"
 
 Context:
 {context}
@@ -125,21 +129,30 @@ prompt_with_history = None
 # =====================================
 
 def load_vector_db():
-    """Load the Qdrant vector store for querying."""
+    """Load the Qdrant vector store for querying — always uses the active slot."""
     from langchain_qdrant import QdrantVectorStore
     from qdrant_client import QdrantClient
+    from utils.embeddings import get_active_collection_name
 
-    os.makedirs(Config.QDRANT_PATH, exist_ok=True)
-    client = QdrantClient(path=Config.QDRANT_PATH)
+    # HTTP connection — no file lock, works alongside concurrent uploads
+    client = QdrantClient(
+        host    = Config.QDRANT_HOST,
+        port    = Config.QDRANT_PORT,
+        timeout = 60,
+    )
 
+    active_collection = get_active_collection_name()
     collections = [c.name for c in client.get_collections().collections]
-    if Config.QDRANT_COLLECTION_NAME not in collections:
+
+    if active_collection not in collections:
         raise Exception("No document has been processed yet. Please upload a document first.")
 
+    logger.info(f"🔵 Querying active slot: {active_collection}")
+
     return QdrantVectorStore(
-        client=client,
-        collection_name=Config.QDRANT_COLLECTION_NAME,
-        embedding=_get_embeddings(),
+        client          = client,
+        collection_name = active_collection,
+        embedding       = _get_embeddings(),
     )
 
 

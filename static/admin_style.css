@@ -904,3 +904,349 @@ code {
     cursor: default;
     letter-spacing: 0.03em;
 }
+
+
+/* ============================================================
+   COLLAPSIBLE PANELS  (Knowledge Base section)
+   ============================================================ */
+
+.collapsible-panel {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    overflow: hidden;
+    backdrop-filter: blur(12px);
+    margin-bottom: 20px;
+}
+
+/* ── Panel header (clickable toggle) ── */
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.18s;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.panel-header:hover {
+    background: rgba(255,255,255,0.03);
+}
+
+.panel-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.panel-header-left svg {
+    width: 18px;
+    height: 18px;
+    stroke: #fbbf24;
+    flex-shrink: 0;
+}
+
+.panel-header-left h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #f1f5f9;
+}
+
+/* small pill showing doc / url count */
+.panel-count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 20px;
+    background: rgba(245,158,11,0.12);
+    border: 1px solid rgba(245,158,11,0.25);
+    color: #fbbf24;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+/* chevron icon */
+.panel-chevron {
+    width: 18px;
+    height: 18px;
+    stroke: #64748b;
+    flex-shrink: 0;
+    transition: transform 0.25s ease, stroke 0.18s;
+}
+
+.panel-chevron.rotated {
+    transform: rotate(180deg);
+    stroke: #fbbf24;
+}
+
+/* ── Panel body (expand / collapse) ── */
+.panel-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.28s ease, opacity 0.22s ease;
+    opacity: 1;
+}
+
+.panel-body.collapsed {
+    grid-template-rows: 0fr;
+    opacity: 0;
+}
+
+/* inner wrapper required for grid-row animation */
+.panel-body > * {
+    overflow: hidden;
+}
+
+/* ── Upload area inside panel ── */
+.panel-upload-area {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px 24px 0;
+}
+
+/* ── Divider between upload form and table ── */
+.panel-table-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 24px 0;
+    color: #475569;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.panel-table-divider::before,
+.panel-table-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+}
+
+/* ── Table area inside panel ── */
+.panel-table-area {
+    padding: 16px 0 4px;
+}
+
+/* ── Refresh row inside panel ── */
+.panel-refresh-row {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 24px 18px;
+}
+
+
+/* ============================================================
+   SEARCH INPUT  (docs + URLs tables)
+   ============================================================ */
+
+.kb-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 24px 14px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 10px;
+    padding: 9px 14px;
+    transition: border-color 0.15s;
+}
+
+.kb-search-wrap:focus-within {
+    border-color: #f59e0b;
+    background: rgba(255,255,255,0.06);
+}
+
+.kb-search-wrap svg {
+    width: 16px;
+    height: 16px;
+    stroke: #64748b;
+    flex-shrink: 0;
+}
+
+.kb-search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e2e8f0;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.kb-search-input::placeholder {
+    color: #475569;
+}
+
+.kb-search-clear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255,255,255,0.08);
+    color: #94a3b8;
+    font-size: 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+    font-family: inherit;
+    line-height: 1;
+}
+
+.kb-search-clear:hover {
+    background: rgba(239,68,68,0.2);
+    color: #f87171;
+}
+
+/* table wrap inside panel gets its own horizontal padding */
+.panel-table-area .kb-table-wrap {
+    padding: 0 24px 8px;
+}
+
+/* loading / empty states inside panels */
+.panel-table-area .kb-loading,
+.panel-table-area .kb-empty {
+    padding: 32px 24px;
+}
+
+
+/* ============================================================
+   VISITORS PAGINATION  (reuses .pagination-controls already
+   defined, but scoped overrides for the visitors section)
+   ============================================================ */
+
+/* The visitors section shares the same .pagination-controls /
+   .pagination-button / .pagination-info classes as chats.
+   No duplicate rules needed — just ensure the wrapper renders. */
+
+#visitorsPagination {
+    padding: 0 24px 18px;
+}
+
+/* ============================================================
+   MISC PANEL TWEAKS
+   ============================================================ */
+
+/* Make kb-table-wrap inside panel-table-area not double-pad */
+.panel-table-area > .kb-table-wrap {
+    padding-top: 0;
+}
+
+/* Gap between the two collapsible panels */
+#section-kb {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Remove bottom margin from last panel */
+#section-kb .collapsible-panel:last-child {
+    margin-bottom: 0;
+}
+
+/* Smooth drop-zone inside panel (inherits existing styles,
+   just reduce min-height to save space) */
+.panel-upload-area .drop-zone {
+    min-height: 130px;
+}
+
+/* url-input-wrap inside panel — no extra bottom margin
+   since panel-upload-area already has gap */
+.panel-upload-area .url-input-wrap {
+    margin-bottom: 0;
+}
+
+
+/* ============================================================
+   KB TAB BAR  (Document / URL switcher)
+   ============================================================ */
+
+.kb-tab-bar {
+    display: flex;
+    gap: 8px;
+    padding: 4px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    width: fit-content;
+    margin-bottom: 20px;
+    backdrop-filter: blur(12px);
+}
+
+.kb-tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 22px;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.18s, color 0.18s, border-color 0.18s;
+    white-space: nowrap;
+}
+
+.kb-tab svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    flex-shrink: 0;
+}
+
+.kb-tab:hover:not(.active) {
+    background: rgba(255,255,255,0.05);
+    color: #94a3b8;
+}
+
+.kb-tab.active {
+    background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(239,68,68,0.12));
+    border-color: rgba(245,158,11,0.35);
+    color: #fbbf24;
+}
+
+/* count pill inside tab */
+.kb-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.08);
+    color: #64748b;
+    transition: background 0.18s, color 0.18s;
+}
+
+.kb-tab.active .kb-tab-count {
+    background: rgba(245,158,11,0.2);
+    color: #fbbf24;
+}
+
+/* tab panel wrapper — just a flex column with gap */
+.kb-tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* override old section-kb flex so tab bar sits above panels */
+#section-kb {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}

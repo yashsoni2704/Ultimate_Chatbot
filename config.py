@@ -26,20 +26,26 @@ class Config:
 
 
     # ==============================
-    # Qdrant Vector Store
+    # Qdrant Vector Store — Blue/Green Strategy
     # ==============================
 
-    QDRANT_PATH = os.getenv(
-        "QDRANT_PATH",
-        "vector_store"
-    )
+    QDRANT_PATH = os.getenv("QDRANT_PATH", "vector_store")
 
-    QDRANT_COLLECTION_NAME = os.getenv(
-        "QDRANT_COLLECTION_NAME",
-        "docmind"
-    )
+    # Qdrant HTTP server settings (server mode — no file lock conflicts)
+    QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
-    # Backward-compat alias (some older code may still reference VECTOR_DB_PATH)
+    # Blue/Green collection names
+    QDRANT_COLLECTION_BLUE  = os.getenv("QDRANT_COLLECTION_BLUE",  "docmind_blue")
+    QDRANT_COLLECTION_GREEN = os.getenv("QDRANT_COLLECTION_GREEN", "docmind_green")
+
+    # Active slot tracker file (inside QDRANT_PATH)
+    ACTIVE_SLOT_FILE = "active_slot.json"
+
+    # Backward-compat single-collection name (legacy migration only)
+    QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "docmind")
+
+    # Backward-compat alias
     VECTOR_DB_PATH = QDRANT_PATH
 
 
