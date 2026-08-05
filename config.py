@@ -125,6 +125,10 @@ class Config:
         )
     )
 
+    # A cold Ollama embedding model can take a few minutes to load on CPU.
+    EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "600"))
+    EMBEDDING_RETRIES = int(os.getenv("EMBEDDING_RETRIES", "2"))
+
 
     # ==============================
     # LLM (Ollama)

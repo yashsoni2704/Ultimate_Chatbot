@@ -38,8 +38,11 @@ RESTART_DELAY  = 2.0    # seconds to wait after a crash before relaunch
 DEBOUNCE       = 1.5    # ignore duplicate triggers within this window (s)
 
 WATCH_EXTENSIONS = {".py", ".html", ".css", ".js", ".env", ".json"}
+# Runtime data changes during uploads and ingestion.  They must never trigger a
+# Flask restart; Qdrant writes metadata JSON files under both data directories.
 IGNORE_DIRS      = {"__pycache__", ".git", "logs", "uploads", "Yash",
-                    ".kiro", "vector_store", "node_modules"}
+                    ".kiro", "vector_store", "storage", "snapshots",
+                    "node_modules"}
 
 SERVERS = {
     "app":   {"script": "app.py",       "label": "Chat  (5000)"},

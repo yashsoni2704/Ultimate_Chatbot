@@ -40,7 +40,7 @@ for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":6333 " ^| findstr "L
 timeout /t 1 /nobreak >nul
 
 echo  [1/3] Starting Qdrant vector database (port 6333) ...
-start "DocMind Qdrant :6333" cmd /k "cd /d "%ROOT%" && set QDRANT__STORAGE__STORAGE_PATH=%ROOT%vector_store && set QDRANT__SERVICE__HTTP_PORT=6333 && set QDRANT__LOG_LEVEL=WARN && "%QDRANT%""
+start "DocMind Qdrant :6333" cmd /k "cd /d ""%ROOT%"" && set ""QDRANT__STORAGE__STORAGE_PATH=%ROOT%vector_store"" && set ""QDRANT__SERVICE__HTTP_PORT=6333"" && set ""QDRANT__LOG_LEVEL=WARN"" && ""%QDRANT%"""
 
 echo  Waiting for Qdrant to be ready on port 6333...
 :WAIT_QDRANT

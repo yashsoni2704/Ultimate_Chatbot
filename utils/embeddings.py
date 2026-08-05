@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime
 
 from config import Config
@@ -305,16 +306,35 @@ class EmbeddingManager:
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         """
         Call Ollama /api/embed directly via requests.
-        Thread-safe, no LangChain overhead, no subprocess.
+        Thread-safe, no LangChain overhead, no subprocess.  Ollama can return
+        a transient timeout while loading a cold embedding model, so retry it.
         """
         import requests as _req
-        resp = _req.post(
-            "http://127.0.0.1:11434/api/embed",
-            json={"model": Config.EMBEDDING_MODEL, "input": texts},
-            timeout=300,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        attempts = max(1, Config.EMBEDDING_RETRIES + 1)
+        data = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = _req.post(
+                    "http://127.0.0.1:11434/api/embed",
+                    json={"model": Config.EMBEDDING_MODEL, "input": texts},
+                    timeout=Config.EMBEDDING_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (_req.RequestException, ValueError) as exc:
+                if attempt == attempts:
+                    raise RuntimeError(
+                        f"Ollama embedding failed after {attempts} attempt(s): {exc}"
+                    ) from exc
+                logger.warning(
+                    "Ollama embedding attempt %d/%d failed (%s); retrying in 5 seconds...",
+                    attempt, attempts, exc,
+                )
+                time.sleep(5)
+
+        assert data is not None
         # Ollama returns {"embeddings": [[...]]} or {"embedding": [...]} depending on version
         if "embeddings" in data:
             return data["embeddings"]
