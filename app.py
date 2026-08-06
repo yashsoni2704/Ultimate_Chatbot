@@ -3,6 +3,7 @@ import os
 import uuid
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from threading import Thread
 
@@ -446,17 +447,24 @@ def chat():
         else:
             logger.info("Conversation history: DISABLED")
 
-        answer = get_answer(
-            question,
-            history  = history,
-            metadata = {
-                "source":   "user_chat",
-                "endpoint": "/chat",
-                "app":      "main",
-            } if Config.LANGCHAIN_TRACING_V2 else None,
-        )
+        with _chat_in_flight_lock:
+            _chat_in_flight = True
+        _t_start = time.time()
+        try:
+            answer = get_answer(
+                question,
+                history  = history,
+                metadata = {
+                    "source":   "user_chat",
+                    "endpoint": "/chat",
+                    "app":      "main",
+                } if Config.LANGCHAIN_TRACING_V2 else None,
+            )
+        finally:
+            with _chat_in_flight_lock:
+                _chat_in_flight = False
+        elapsed_ms = int((time.time() - _t_start) * 1000)
 
-        # ── Persist to MongoDB (background — never block the response) ──
         def _save_rag_log(visitor_id, session_id, question, answer):
             try:
                 save_chat_log(
@@ -478,7 +486,7 @@ def chat():
         ).start()
 
         logger.info("Answer generated successfully")
-        return jsonify({"status": "success", "answer": answer})
+        return jsonify({"status": "success", "answer": answer, "elapsed_ms": elapsed_ms})
 
     except Exception as e:
         logger.error(f" Error in /chat endpoint: {str(e)}")
@@ -593,8 +601,73 @@ def visitor_info():
 
 @app.route("/client-config")
 def client_config():
+    from utils.transcribe import read_active_provider, VALID_PROVIDERS
+    provider = read_active_provider()
     return jsonify({
         "mic_silence_timeout": Config.MIC_SILENCE_TIMEOUT,
+        "stt_provider":        provider,
+        "stt_provider_label":  VALID_PROVIDERS.get(provider, provider),
+    })
+
+
+# ---------------------------------------------------------
+# STT PROVIDER — read active / switch (idle-safe)
+# ---------------------------------------------------------
+
+# Track whether a /chat request is currently in-flight.
+# Set to True when /chat starts, False when it returns.
+# The admin switch endpoint waits for this to be False.
+_chat_in_flight = False
+_chat_in_flight_lock = threading.Lock()
+
+
+@app.route("/stt/provider", methods=["GET"])
+def stt_get_provider():
+    """Return the currently active STT provider."""
+    from utils.transcribe import read_active_provider, VALID_PROVIDERS
+    provider = read_active_provider()
+    return jsonify({
+        "status":   "success",
+        "provider": provider,
+        "label":    VALID_PROVIDERS.get(provider, provider),
+        "all":      [{"key": k, "label": v} for k, v in VALID_PROVIDERS.items()],
+    })
+
+
+@app.route("/stt/provider", methods=["POST"])
+def stt_set_provider():
+    """
+    Switch STT provider.  Waits up to 10 s for any in-flight /chat
+    request to finish before writing the new provider, so the switch
+    is always idle-safe.
+    """
+    from utils.transcribe import set_active_provider, VALID_PROVIDERS
+    data     = request.get_json() or {}
+    provider = (data.get("provider") or "").strip().lower()
+
+    if not provider:
+        return jsonify({"status": "error", "message": "provider is required."}), 400
+    if provider not in VALID_PROVIDERS:
+        return jsonify({
+            "status":  "error",
+            "message": f"Unknown provider '{provider}'. Valid: {list(VALID_PROVIDERS)}",
+        }), 400
+
+    # Wait for idle (max 10 s)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        with _chat_in_flight_lock:
+            if not _chat_in_flight:
+                break
+        time.sleep(0.2)
+
+    set_active_provider(provider)
+    logger.info(f"[STT] Switched to {provider} via /stt/provider")
+    return jsonify({
+        "status":   "success",
+        "provider": provider,
+        "label":    VALID_PROVIDERS[provider],
+        "message":  f"STT provider switched to {VALID_PROVIDERS[provider]}.",
     })
 
 
@@ -671,7 +744,7 @@ def on_transcribe_disconnect():
 
 @socketio.on("start_transcription", namespace="/transcribe")
 def on_start_transcription():
-    from utils.transcribe import TranscribeSession
+    from utils.transcribe import get_session, read_active_provider, VALID_PROVIDERS
     sid = request.sid
 
     # Clean up any stale session for this socket
@@ -682,7 +755,9 @@ def on_start_transcription():
         except Exception:
             pass
 
-    # Accumulate full transcript for this recording session (for logging)
+    provider = read_active_provider()
+    logger.info(f" STT session starting: provider={provider} ({VALID_PROVIDERS.get(provider)}) sid={sid}")
+
     session_transcript = []
 
     def _on_transcript(text):
@@ -694,13 +769,12 @@ def on_start_transcription():
         logger.error(f" Transcription error [{sid[:8]}]: {msg}")
         socketio.emit("transcribe_error", {"message": msg}, namespace="/transcribe", to=sid)
 
-    sess = TranscribeSession(on_transcript=_on_transcript, on_error=_on_error)
-    # Attach transcript accumulator so stop handler can log the full text
+    sess = get_session(on_transcript=_on_transcript, on_error=_on_error)
     sess._session_transcript = session_transcript
     sess.start()
     _transcribe_sessions[sid] = sess
-    emit("transcription_started", {"status": "ok"})
-    logger.info(f" AssemblyAI session opened for {sid}")
+    emit("transcription_started", {"status": "ok", "provider": provider, "label": VALID_PROVIDERS.get(provider, provider)})
+    logger.info(f" STT session opened: {provider} for {sid}")
 
 @socketio.on("audio_chunk", namespace="/transcribe")
 def on_audio_chunk(data):

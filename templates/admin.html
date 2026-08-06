@@ -70,6 +70,7 @@
                     <li><a class="nav-link"         href="#chats"   onclick="showSection('chats')">💬 Chat Logs</a></li>
                     <li><a class="nav-link"         href="#visitors" onclick="showSection('visitors')">👤 Visitors</a></li>
                     <li><a class="nav-link"         href="#bookings" onclick="showSection('bookings')">📅 Bookings</a></li>
+                    <li><a class="nav-link"         href="#stt"      onclick="showSection('stt')">🎙 STT Settings</a></li>
                 </ul>
             </div>
 
@@ -433,6 +434,76 @@
                     </div>
                 </section>
             </div><!-- /section-bookings -->
+
+            <!-- ════════════════════════════════
+                 SECTION: STT SETTINGS
+            ════════════════════════════════ -->
+            <div id="section-stt" style="display:none;">
+                <section class="upload-card" style="max-width:640px;">
+                    <div class="upload-card-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="2" width="6" height="12" rx="3"/>
+                            <path d="M5 10a7 7 0 0 0 14 0"/>
+                            <line x1="12" y1="19" x2="12" y2="22"/>
+                            <line x1="8"  y1="22" x2="16" y2="22"/>
+                        </svg>
+                        <h3>Speech-to-Text Provider</h3>
+                    </div>
+
+                    <div style="padding:24px 28px 28px;">
+
+                        <!-- Current provider badge -->
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:22px;">
+                            <span style="font-size:13px;font-weight:600;color:#64748b;">Active provider:</span>
+                            <span id="sttActiveBadge" style="
+                                display:inline-flex;align-items:center;gap:6px;
+                                padding:5px 14px;border-radius:20px;font-size:12.5px;font-weight:700;
+                                background:rgba(99,102,241,0.1);color:#4f46e5;
+                                border:1.5px solid rgba(99,102,241,0.3);">
+                                Loading…
+                            </span>
+                            <span id="sttIdleNote" style="font-size:11px;color:#94a3b8;display:none;">
+                                ⏳ Switch queued — takes effect on next mic session
+                            </span>
+                        </div>
+
+                        <!-- Provider cards -->
+                        <div id="sttProviderGrid" style="
+                            display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;
+                            margin-bottom:22px;">
+                        </div>
+
+                        <!-- Status message -->
+                        <div id="sttStatus" style="display:none;padding:10px 14px;border-radius:10px;
+                            font-size:13px;font-weight:500;margin-top:4px;"></div>
+
+                        <!-- Provider info table -->
+                        <div style="margin-top:24px;border-top:1px solid #f1f5f9;padding-top:20px;">
+                            <p style="font-size:12px;font-weight:700;color:#94a3b8;
+                               text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
+                                Provider Details
+                            </p>
+                            <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+                                <thead>
+                                    <tr style="background:#f8fafc;">
+                                        <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0;">Provider</th>
+                                        <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0;">Type</th>
+                                        <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;border-bottom:1px solid #e2e8f0;">Requires</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;">AssemblyAI</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;">Cloud WebSocket</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#64748b;">ASSEMBLYAI_API_KEY</td></tr>
+                                    <tr><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;">Deepgram Nova-3</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;">Cloud WebSocket</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#64748b;">DEEPGRAM_API_KEY</td></tr>
+                                    <tr><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;">Faster-Whisper</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;">Local (CPU/GPU)</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#64748b;">pip install faster-whisper</td></tr>
+                                    <tr><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;font-weight:600;">Vosk</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;">Local (offline)</td><td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#64748b;">pip install vosk + model</td></tr>
+                                    <tr><td style="padding:8px 12px;font-weight:600;">Windows Speech</td><td style="padding:8px 12px;">OS-native</td><td style="padding:8px 12px;color:#64748b;">Windows + pywin32</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                    </div>
+                </section>
+            </div><!-- /section-stt -->
 
         </main>
     </div>

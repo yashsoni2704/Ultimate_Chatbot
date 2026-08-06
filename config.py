@@ -229,3 +229,21 @@ class Config:
 
     # Seconds of silence before mic auto-closes
     MIC_SILENCE_TIMEOUT = int(os.getenv("MIC_SILENCE_TIMEOUT", "3"))
+
+    # ==============================
+    # Speech-to-Text (STT)
+    # ==============================
+
+    # Default provider written to stt_provider.json on first run.
+    # Valid values: assemblyai | deepgram | faster_whisper | vosk | windows_sapi
+    STT_PROVIDER_DEFAULT = os.getenv("STT_PROVIDER", "assemblyai").strip().lower()
+
+    # API keys for cloud STT providers
+    ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "").strip()
+    DEEPGRAM_API_KEY   = os.getenv("DEEPGRAM_API_KEY",   "").strip()
+
+    # Path to the local Vosk model directory (download from https://alphacephei.com/vosk/models)
+    VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-en-us").strip()
+
+    # faster-whisper model size: tiny | base | small | medium | large-v2
+    FASTER_WHISPER_MODEL = os.getenv("FASTER_WHISPER_MODEL", "base").strip()

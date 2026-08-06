@@ -509,12 +509,59 @@ def api_users():
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# STT PROVIDER — read / switch
+# ════════════════════════════════════════════════════════════════════════════
+
+@admin_app.route("/admin/stt/provider", methods=["GET"])
+def admin_stt_get():
+    from utils.transcribe import read_active_provider, VALID_PROVIDERS
+    provider = read_active_provider()
+    return jsonify({
+        "status":   "success",
+        "provider": provider,
+        "label":    VALID_PROVIDERS.get(provider, provider),
+        "all":      [{"key": k, "label": v} for k, v in VALID_PROVIDERS.items()],
+    })
+
+
+@admin_app.route("/admin/stt/provider", methods=["POST"])
+def admin_stt_set():
+    """
+    Switch STT provider.
+    Idle-safe: writes stt_provider.json.
+    New provider takes effect on the next mic session — no active session interrupted.
+    """
+    from utils.transcribe import set_active_provider, VALID_PROVIDERS
+    data     = request.get_json() or {}
+    provider = (data.get("provider") or "").strip().lower()
+
+    if not provider:
+        return jsonify({"status": "error", "message": "provider is required."}), 400
+    if provider not in VALID_PROVIDERS:
+        return jsonify({
+            "status":  "error",
+            "message": f"Unknown provider '{provider}'. Valid: {list(VALID_PROVIDERS)}",
+        }), 400
+
+    try:
+        set_active_provider(provider)
+        logger.info(f"[STT] Admin switched provider → {provider}")
+        return jsonify({
+            "status":   "success",
+            "provider": provider,
+            "label":    VALID_PROVIDERS[provider],
+            "message":  f"STT provider switched to {VALID_PROVIDERS[provider]}. Takes effect on next mic session.",
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK
 # ════════════════════════════════════════════════════════════════════════════
 
 @admin_app.route("/admin/health")
 def admin_health():
-    mongo_ok = False
     try:
         get_db().command("ping")
         mongo_ok = True

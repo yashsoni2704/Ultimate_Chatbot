@@ -698,12 +698,13 @@ function hideScrapeStatus()              { scrapeStatus.style.display = "none"; 
 //  SECTION NAVIGATION
 // ════════════════════════════════════════════════════════════════════════════
 
-const SECTIONS = ["kb", "chats", "visitors", "bookings"];
+const SECTIONS = ["kb", "chats", "visitors", "bookings", "stt"];
 const PAGE_TITLES = {
     kb:       ["Knowledge Base Manager",    "Upload documents and URLs to expand what the chatbot knows"],
     chats:    ["Chat Logs",                 "All conversations recorded from users"],
     visitors: ["Visitors",                  "IP, geo, browser and device data for every visitor"],
     bookings: ["Bookings",                  "Test-drive and service slot bookings"],
+    stt:      ["STT Settings",              "Switch the Speech-to-Text provider used for voice input"],
 };
 
 function showSection(name) {
@@ -727,6 +728,7 @@ function showSection(name) {
     if (name === "chats")    loadChats();
     if (name === "visitors") loadVisitors();
     if (name === "bookings") loadBookings();
+    if (name === "stt")      loadSttSettings();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -966,6 +968,113 @@ async function loadBookings() {
         bookingsEmpty.style.display   = "flex";
     } finally {
         if (refreshBookingsBtn) refreshBookingsBtn.classList.remove("spinning");
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  STT SETTINGS
+// ════════════════════════════════════════════════════════════════════════════
+
+async function loadSttSettings() {
+    try {
+        const res  = await fetch(`${API}/admin/stt/provider`, { credentials: "include" });
+        const data = await res.json();
+        if (data.status !== "success") return;
+        renderSttProviders(data.all, data.provider);
+        updateSttBadge(data.provider, data.label);
+    } catch (_) {}
+}
+
+function updateSttBadge(provider, label) {
+    const badge = document.getElementById("sttActiveBadge");
+    if (badge) badge.textContent = label || provider;
+}
+
+function renderSttProviders(providers, active) {
+    const grid = document.getElementById("sttProviderGrid");
+    if (!grid) return;
+    grid.innerHTML = "";
+
+    providers.forEach(p => {
+        const isActive = p.key === active;
+        const card = document.createElement("div");
+        card.style.cssText = `
+            padding:14px 16px; border-radius:12px; cursor:pointer;
+            border:2px solid ${isActive ? "#6366f1" : "#e2e8f0"};
+            background:${isActive ? "rgba(99,102,241,0.07)" : "#f8fafc"};
+            transition:all 0.2s; display:flex; flex-direction:column; gap:6px;`;
+        card.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <span style="font-size:13px;font-weight:700;color:${isActive ? "#4f46e5" : "#1e293b"};">${escHtml(p.label)}</span>
+                ${isActive ? `<span style="width:8px;height:8px;border-radius:50%;background:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,0.2);flex-shrink:0;"></span>` : ""}
+            </div>
+            ${isActive ? `<span style="font-size:10px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:0.5px;">Active</span>` : `<span style="font-size:10px;color:#94a3b8;">Click to activate</span>`}`;
+
+        if (!isActive) {
+            card.addEventListener("mouseenter", () => {
+                card.style.borderColor = "#a5b4fc";
+                card.style.background  = "#f0f4ff";
+            });
+            card.addEventListener("mouseleave", () => {
+                card.style.borderColor = "#e2e8f0";
+                card.style.background  = "#f8fafc";
+            });
+            card.addEventListener("click", () => switchSttProvider(p.key, p.label));
+        }
+        grid.appendChild(card);
+    });
+}
+
+async function switchSttProvider(key, label) {
+    const statusEl  = document.getElementById("sttStatus");
+    const idleNote  = document.getElementById("sttIdleNote");
+
+    if (statusEl) {
+        statusEl.style.display    = "block";
+        statusEl.style.background = "rgba(99,102,241,0.08)";
+        statusEl.style.color      = "#4f46e5";
+        statusEl.style.border     = "1px solid rgba(99,102,241,0.2)";
+        statusEl.textContent      = `⏳ Switching to ${label}…`;
+    }
+
+    try {
+        const res  = await fetch(`${API}/admin/stt/provider`, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ provider: key }),
+        });
+        const data = await res.json();
+
+        if (data.status === "success") {
+            if (statusEl) {
+                statusEl.style.background = "rgba(16,185,129,0.08)";
+                statusEl.style.color      = "#059669";
+                statusEl.style.border     = "1px solid rgba(16,185,129,0.2)";
+                statusEl.textContent      = `✅ ${data.message}`;
+            }
+            if (idleNote) idleNote.style.display = "inline";
+            updateSttBadge(data.provider, data.label);
+            // Re-render cards with new active
+            const res2  = await fetch(`${API}/admin/stt/provider`, { credentials: "include" });
+            const data2 = await res2.json();
+            if (data2.status === "success") renderSttProviders(data2.all, data2.provider);
+            setTimeout(() => { if (idleNote) idleNote.style.display = "none"; }, 6000);
+        } else {
+            if (statusEl) {
+                statusEl.style.background = "rgba(239,68,68,0.08)";
+                statusEl.style.color      = "#dc2626";
+                statusEl.style.border     = "1px solid rgba(239,68,68,0.2)";
+                statusEl.textContent      = `❌ ${data.message}`;
+            }
+        }
+    } catch (err) {
+        if (statusEl) {
+            statusEl.style.background = "rgba(239,68,68,0.08)";
+            statusEl.style.color      = "#dc2626";
+            statusEl.style.border     = "1px solid rgba(239,68,68,0.2)";
+            statusEl.textContent      = `❌ Network error: ${err.message}`;
+        }
     }
 }
 

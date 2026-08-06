@@ -480,6 +480,7 @@ function sendMessage() {
     askBtn.disabled           = true;
     questionInput.placeholder = "Ask anything about your documents…";
 
+    const t_start = Date.now();
     addLoading();
 
     fetch("/chat", {
@@ -489,19 +490,22 @@ function sendMessage() {
     })
     .then(r => r.json())
     .then(result => {
+        const elapsed_ms = result.elapsed_ms || (Date.now() - t_start);
         removeLoading();
-        addBotMessage(result.status === "success" ? result.answer : "❌ " + result.message);
+        addBotMessage(
+            result.status === "success" ? result.answer : "❌ " + result.message,
+            elapsed_ms
+        );
         _enableInput();
         setTimeout(() => {
             autoScrollChat();
             questionInput.focus();
-            // Try to show lead form after bot response (feels more natural)
             maybeShowLeadForm();
         }, 120);
     })
     .catch(err => {
         removeLoading();
-        addBotMessage("❌ " + err.message);
+        addBotMessage("❌ " + err.message, null);
         _enableInput();
         setTimeout(() => {
             autoScrollChat();
@@ -528,7 +532,7 @@ function addUserMessage(text) {
     autoScrollChat();
 }
 
-function addBotMessage(rawText) {
+function addBotMessage(rawText, elapsed_ms) {
     msgCounter++;
     const speechId = "speech_" + msgCounter;
 
@@ -543,6 +547,10 @@ function addBotMessage(rawText) {
             .join("");
     }
 
+    const timingHtml = (elapsed_ms != null)
+        ? `<span class="answer-timing">⏱ ${elapsed_ms >= 1000 ? (elapsed_ms / 1000).toFixed(1) + "s" : elapsed_ms + "ms"}</span>`
+        : "";
+
     const card = document.createElement("div");
     card.className = "bot-message";
 
@@ -556,6 +564,7 @@ function addBotMessage(rawText) {
                 </svg>
             </div>
             <span class="bot-label">AI</span>
+            ${timingHtml}
         </div>
         <div class="bot-message-body" id="${speechId}">${bodyHtml}</div>
         <div class="bot-message-footer">
@@ -578,7 +587,6 @@ function addBotMessage(rawText) {
 
     // ── Autoplay ──────────────────────────────────────────────
     if (autoplayEnabled) {
-        // Small delay so the card is painted first
         setTimeout(() => {
             const playBtn = card.querySelector(".play-btn");
             speakMessage(speechId, playBtn);
