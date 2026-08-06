@@ -620,33 +620,72 @@ body {
     margin: 14px 0;
 }
 
-/* Tables — horizontally scrollable wrapper */
+/* ── Comparison / data tables ── */
+.bot-message-body .table-wrap {
+    overflow-x: auto;
+    margin: 18px 0 6px;
+    border-radius: 12px;
+    border: 1.5px solid #c7d2e8;
+    box-shadow: 0 2px 12px rgba(99,102,241,0.07);
+}
 .bot-message-body table {
     border-collapse: collapse;
     width: 100%;
+    min-width: 420px;
     font-size: 14px;
-    margin: 14px 0;
-    border: 1.5px solid #cbd5e1;
-    border-radius: 10px;
-    overflow-x: auto;
-    display: block;
+    border-radius: 12px;
+    overflow: hidden;
+    display: table;
+}
+.bot-message-body thead tr {
+    background: linear-gradient(90deg, #6366f1 0%, #818cf8 100%);
 }
 .bot-message-body th {
-    background: #f1f5f9;
-    padding: 11px 16px;
+    padding: 12px 18px;
     text-align: left;
     font-weight: 700;
-    color: #0f172a;
-    border-bottom: 1.5px solid #cbd5e1;
+    font-size: 13.5px;
+    color: #ffffff;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    border-right: 1px solid rgba(255,255,255,0.18);
+}
+.bot-message-body th:last-child { border-right: none; }
+
+/* first column = feature label */
+.bot-message-body td:first-child {
+    font-weight: 600;
+    color: #374151;
+    background: #f8fafc;
     white-space: nowrap;
 }
 .bot-message-body td {
-    padding: 10px 16px;
-    border-bottom: 1px solid #e2e8f0;
+    padding: 11px 18px;
+    border-bottom: 1px solid #e8edf5;
+    border-right: 1px solid #e8edf5;
     color: #1e293b;
     word-break: break-word;
+    vertical-align: middle;
 }
+.bot-message-body td:last-child { border-right: none; }
 .bot-message-body tr:last-child td { border-bottom: none; }
+
+/* alternating row tint */
+.bot-message-body tbody tr:nth-child(even) td { background: #f4f7fd; }
+.bot-message-body tbody tr:nth-child(even) td:first-child { background: #eef2fb; }
+
+/* "-" cells — muted so they read as "not available" */
+.bot-message-body td:not(:first-child) {
+    min-width: 120px;
+}
+/* hover row highlight */
+.bot-message-body tbody tr:hover td {
+    background: #eef0ff;
+    transition: background 0.15s;
+}
+.bot-message-body tbody tr:hover td:first-child {
+    background: #e5e7f7;
+}
 
 /* Inline code */
 .bot-message-body code:not(pre code) {

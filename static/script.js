@@ -551,6 +551,9 @@ function addBotMessage(rawText, elapsed_ms) {
         ? `<span class="answer-timing">⏱ ${elapsed_ms >= 1000 ? (elapsed_ms / 1000).toFixed(1) + "s" : elapsed_ms + "ms"}</span>`
         : "";
 
+    // Wrap any markdown tables in a scrollable div for clean overflow on small screens
+    bodyHtml = bodyHtml.replace(/<table/g, '<div class="table-wrap"><table').replace(/<\/table>/g, '</table></div>');
+
     const card = document.createElement("div");
     card.className = "bot-message";
 
