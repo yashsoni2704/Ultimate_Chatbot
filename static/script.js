@@ -21,6 +21,10 @@ const userGreeting      = document.getElementById("userGreeting");
 const userGreetingAvatar= document.getElementById("userGreetingAvatar");
 const userGreetingName  = document.getElementById("userGreetingName");
 
+// Autoplay toggle
+const autoplayBtn   = document.getElementById("autoplayBtn");
+const autoplayPill  = document.getElementById("autoplayPill");
+
 // Lead capture modal
 const leadModal      = document.getElementById("leadModal");
 const leadModalClose = document.getElementById("leadModalClose");
@@ -38,9 +42,32 @@ let leadFormShown    = false;      // only show once per session
 let leadFormDismissed= false;      // user skipped — don't re-show
 
 // ── Visitor UUID (persisted in localStorage) ──────────────────────────────
-const LS_KEY = "docmind_visitor_id";
-let visitorId = "";
+const LS_KEY          = "docmind_visitor_id";
+const LS_AUTOPLAY_KEY = "docmind_autoplay";
+let visitorId   = "";
 let visitorName = "";
+
+// ── Autoplay state ────────────────────────────────────────────────────────
+let autoplayEnabled = localStorage.getItem(LS_AUTOPLAY_KEY) === "true";
+
+// ── TTS language — resolved once at startup ───────────────────────────────
+// Supported BCP-47 tags → Web Speech API lang codes.
+// If the browser's language isn't in this map we fall back to en-US.
+const SUPPORTED_LANGS = {
+    "en":  "en-US",
+    "hi":  "hi-IN",
+    "es":  "es-ES",
+    "fr":  "fr-FR",
+    "de":  "de-DE",
+    "pt":  "pt-BR",
+    "ar":  "ar-SA",
+    "ja":  "ja-JP",
+    "zh":  "zh-CN",
+    "it":  "it-IT",
+    "ko":  "ko-KR",
+    "ru":  "ru-RU",
+};
+let ttsLang = "en-US";   // resolved in detectTTSLanguage()
 
 // ===============================
 // On Page Load
@@ -48,11 +75,67 @@ let visitorName = "";
 
 window.addEventListener("load", () => {
     questionInput.focus();
+    detectTTSLanguage();     // resolve browser language → ttsLang
+    initAutoplay();          // restore toggle state + wire button
     initVisitor();           // UUID + name handshake
     loadKnowledgeBase();
     startKbPolling();
     wireLeadModal();
 });
+
+// ===============================
+// TTS Language Detection
+// Runs once at page load — reads navigator.languages / navigator.language,
+// matches against SUPPORTED_LANGS, falls back to en-US if not found.
+// ===============================
+
+function detectTTSLanguage() {
+    const preferred = (navigator.languages && navigator.languages.length)
+        ? [...navigator.languages]
+        : [navigator.language || "en"];
+
+    for (const lang of preferred) {
+        // Try full tag first (e.g. "hi-IN"), then base code (e.g. "hi")
+        const full = lang.toLowerCase().replace("_", "-");
+        const base = full.split("-")[0];
+
+        if (SUPPORTED_LANGS[full]) {
+            ttsLang = SUPPORTED_LANGS[full];
+            console.log(`[TTS] Language detected: ${lang} → ${ttsLang}`);
+            return;
+        }
+        if (SUPPORTED_LANGS[base]) {
+            ttsLang = SUPPORTED_LANGS[base];
+            console.log(`[TTS] Language detected: ${lang} → ${ttsLang}`);
+            return;
+        }
+    }
+    // Nothing matched — stay on en-US
+    console.log(`[TTS] No supported language matched (${preferred[0]}) — using en-US`);
+}
+
+// ===============================
+// Autoplay Toggle
+// ===============================
+
+function initAutoplay() {
+    _renderAutoplay();
+    autoplayBtn.addEventListener("click", () => {
+        autoplayEnabled = !autoplayEnabled;
+        localStorage.setItem(LS_AUTOPLAY_KEY, autoplayEnabled);
+        _renderAutoplay();
+    });
+}
+
+function _renderAutoplay() {
+    if (autoplayEnabled) {
+        autoplayBtn.classList.add("autoplay-on");
+        autoplayPill.textContent = "ON";
+    } else {
+        autoplayBtn.classList.remove("autoplay-on");
+        autoplayPill.textContent = "OFF";
+    }
+}
 
 // ===============================
 // UUID / Visitor Handshake
@@ -466,6 +549,15 @@ function addBotMessage(rawText) {
     }
 
     autoScrollChat();
+
+    // ── Autoplay ──────────────────────────────────────────────
+    if (autoplayEnabled) {
+        // Small delay so the card is painted first
+        setTimeout(() => {
+            const playBtn = card.querySelector(".play-btn");
+            speakMessage(speechId, playBtn);
+        }, 150);
+    }
 }
 
 // ===============================
@@ -505,7 +597,7 @@ function speakMessage(id, btn) {
     }
 
     const utterance = new SpeechSynthesisUtterance(el.innerText);
-    utterance.lang  = "en-US";
+    utterance.lang  = ttsLang;   // browser-detected language (en-US fallback)
     utterance.rate  = 1;
     utterance.pitch = 1;
 

@@ -46,7 +46,7 @@ from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 # ── project ──────────────────────────────────────────────────────────────────
 from config import Config
 from utils.logger import get_logger
-from utils.chunker import chunk_documents
+from utils.chunker import chunk_documents, _enrich
 from utils.embeddings import EmbeddingManager
 
 logger = get_logger(__name__)
@@ -538,12 +538,22 @@ def _xlsx_sheet_image_blobs(zf: zipfile.ZipFile, sheet_index: int) -> list:
 
 def _load_xlsx(file_path: str) -> list:
     """
-    Load an Excel file.
+    Load an Excel file — one Document per data row.
 
-    For each sheet:
-      1. Extract cell values.
-      2. Extract embedded images for that sheet.
-      3. OCR the images in parallel and append to the sheet's Document.
+    Strategy
+    --------
+    • The first non-empty row of each sheet is treated as the header row.
+    • Every subsequent non-empty data row becomes its own Document:
+
+          "Header1: Value1 | Header2: Value2 | Header3: Value3"
+
+      This preserves the column–value relationship inside each chunk so
+      retrieval is accurate without any row bleeding into another.
+    • No overlap — every Document is a fully self-contained record.
+    • Embedded sheet images are OCR-'d and appended as separate Documents
+      at the end of the sheet's row list.
+
+    XLS (legacy) path uses the same row-per-document strategy via xlrd.
     """
     try:
         import openpyxl
@@ -551,6 +561,8 @@ def _load_xlsx(file_path: str) -> list:
         raise ImportError("openpyxl is required. pip install openpyxl")
 
     ext = os.path.splitext(file_path)[1].lower()
+
+    # ── Legacy .xls via xlrd ─────────────────────────────────────────────────
     if ext == ".xls":
         try:
             import xlrd
@@ -558,24 +570,64 @@ def _load_xlsx(file_path: str) -> list:
             documents = []
             for sheet_name in workbook.sheet_names():
                 sheet = workbook.sheet_by_name(sheet_name)
-                rows  = []
+                if sheet.nrows == 0:
+                    continue
+
+                # Find the first non-empty row to use as headers
+                headers = []
+                header_row_idx = 0
                 for row_idx in range(sheet.nrows):
-                    cells = [str(sheet.cell_value(row_idx, col)).strip()
-                             for col in range(sheet.ncols)]
-                    cells = [c for c in cells if c]
-                    if cells:
-                        rows.append(" | ".join(cells))
-                if rows:
+                    candidate = [
+                        str(sheet.cell_value(row_idx, col)).strip()
+                        for col in range(sheet.ncols)
+                    ]
+                    candidate = [c for c in candidate if c]
+                    if candidate:
+                        headers = candidate
+                        header_row_idx = row_idx
+                        break
+
+                if not headers:
+                    continue
+
+                # One Document per data row
+                for row_idx in range(header_row_idx + 1, sheet.nrows):
+                    raw_cells = [
+                        str(sheet.cell_value(row_idx, col)).strip()
+                        for col in range(sheet.ncols)
+                    ]
+                    # Skip completely empty rows
+                    if not any(raw_cells):
+                        continue
+
+                    # Pair each value with its column header
+                    pairs = []
+                    for col_idx, value in enumerate(raw_cells):
+                        header = (
+                            headers[col_idx]
+                            if col_idx < len(headers)
+                            else f"Column{col_idx + 1}"
+                        )
+                        # Include even empty cells so column positions are clear
+                        pairs.append(f"{header}: {value if value else '-'}")
+
+                    row_text = " | ".join(pairs)
                     documents.append(Document(
-                        page_content="\n".join(rows),
-                        metadata={"source": file_path, "sheet": sheet_name,
-                                  "file_type": "xls"},
+                        page_content=row_text,
+                        metadata={
+                            "source":     file_path,
+                            "sheet":      sheet_name,
+                            "row_number": row_idx,
+                            "file_type":  "xls",
+                        },
                     ))
+
             return documents
         except ImportError:
             raise ImportError("xlrd is required. pip install xlrd")
 
-    wb        = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    # ── Modern .xlsx via openpyxl ────────────────────────────────────────────
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     documents = []
 
     # Open ZIP once for image extraction across all sheets
@@ -585,31 +637,80 @@ def _load_xlsx(file_path: str) -> list:
         xlsx_zip = None
 
     for sheet_idx, sheet_name in enumerate(wb.sheetnames):
-        ws   = wb[sheet_name]
-        rows = []
+        ws = wb[sheet_name]
+
+        # Collect all rows as plain string lists (filter None)
+        all_rows = []
         for row in ws.iter_rows(values_only=True):
-            cells = [str(c).strip() for c in row
-                     if c is not None and str(c).strip()]
-            if cells:
-                rows.append(" | ".join(cells))
+            cells = [str(c).strip() if c is not None else "" for c in row]
+            all_rows.append(cells)
 
-        text_parts = rows[:]   # copy so we can append OCR
+        if not all_rows:
+            continue
 
-        # Parallel image OCR for this sheet
+        # Find the first non-empty row → treat as column headers
+        headers = []
+        header_row_idx = 0
+        for idx, row_cells in enumerate(all_rows):
+            non_empty = [c for c in row_cells if c]
+            if non_empty:
+                # Use non-empty values as headers; blank header cells get
+                # a fallback name so nothing is silently dropped
+                headers = [
+                    c if c else f"Column{i + 1}"
+                    for i, c in enumerate(row_cells)
+                ]
+                header_row_idx = idx
+                break
+
+        if not headers:
+            continue
+
+        # One Document per data row
+        for row_idx, row_cells in enumerate(all_rows[header_row_idx + 1:],
+                                            start=header_row_idx + 1):
+            # Skip completely empty rows
+            if not any(c for c in row_cells):
+                continue
+
+            # Pair each cell value with its column header
+            pairs = []
+            for col_idx, value in enumerate(row_cells):
+                header = (
+                    headers[col_idx]
+                    if col_idx < len(headers)
+                    else f"Column{col_idx + 1}"
+                )
+                pairs.append(f"{header}: {value if value else '-'}")
+
+            row_text = " | ".join(pairs)
+            documents.append(Document(
+                page_content=row_text,
+                metadata={
+                    "source":     file_path,
+                    "sheet":      sheet_name,
+                    "row_number": row_idx,
+                    "file_type":  "xlsx",
+                },
+            ))
+
+        # OCR images for this sheet → each OCR result is its own Document
         if xlsx_zip is not None:
             image_blobs = _xlsx_sheet_image_blobs(xlsx_zip, sheet_idx)
             if image_blobs:
                 ocr_texts = _ocr_images_parallel(
                     image_blobs, label=f"xlsx sheet '{sheet_name}'"
                 )
-                text_parts.extend(ocr_texts)
-
-        if text_parts:
-            documents.append(Document(
-                page_content="\n".join(text_parts),
-                metadata={"source": file_path, "sheet": sheet_name,
-                          "file_type": "xlsx"},
-            ))
+                for ocr_text in ocr_texts:
+                    documents.append(Document(
+                        page_content=ocr_text,
+                        metadata={
+                            "source":    file_path,
+                            "sheet":     sheet_name,
+                            "file_type": "xlsx",
+                            "extractor": "ocr",
+                        },
+                    ))
 
     if xlsx_zip is not None:
         xlsx_zip.close()
@@ -757,12 +858,20 @@ def process_document(file_path: str) -> str:
             logger.info(f"  Section {i+1}: {len(doc.page_content)} characters")
 
         # Step 2 — Chunk + enrich
-        logger.info(
-            f"Step 2: Chunking + contextual enrichment "
-            f"(size={Config.CHUNK_SIZE}, overlap={Config.CHUNK_OVERLAP})..."
-        )
-        chunks = _traced_chunk(documents, filename=filename)
-        logger.info(f"✅ Created {len(chunks)} enriched chunks")
+        # Excel files: each Document is already one complete row — skip the
+        # text splitter entirely so rows are never broken across chunks.
+        # Just apply contextual enrichment (_enrich) to each row as-is.
+        if extension in ("xlsx", "xls"):
+            logger.info("Step 2: Excel detected — skipping splitter, enriching rows as whole units...")
+            chunks = [_enrich(doc) for doc in documents]
+            logger.info(f"✅ Created {len(chunks)} enriched row chunks (no splitting)")
+        else:
+            logger.info(
+                f"Step 2: Chunking + contextual enrichment "
+                f"(size={Config.CHUNK_SIZE}, overlap={Config.CHUNK_OVERLAP})..."
+            )
+            chunks = _traced_chunk(documents, filename=filename)
+            logger.info(f"✅ Created {len(chunks)} enriched chunks")
 
         if not chunks:
             raise Exception(

@@ -20,6 +20,12 @@ uploads/
 # Vector database/store
 vector_store/
 
+# Qdrant runtime storage
+storage/
+
+# Qdrant init marker
+.qdrant-initialized
+
 # Logs
 *.log
 

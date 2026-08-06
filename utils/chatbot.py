@@ -32,6 +32,7 @@ else:
 
 _embeddings = None
 _llm        = None
+_reranker   = None
 _prompt_no_history   = None
 _prompt_with_history = None
 
@@ -44,6 +45,54 @@ def _get_embeddings():
         _embeddings = OllamaEmbeddings(model=Config.EMBEDDING_MODEL)
         logger.info("✅ Embedding model ready")
     return _embeddings
+
+
+def _get_reranker():
+    """Lazy singleton for BGE reranker. Only loaded when RERANKER_ENABLED=True."""
+    global _reranker
+    if _reranker is None:
+        from FlagEmbedding import FlagReranker
+        logger.info(f"Initializing reranker: {Config.RERANKER_MODEL}")
+        _reranker = FlagReranker(Config.RERANKER_MODEL, use_fp16=True)
+        logger.info("✅ Reranker ready")
+    return _reranker
+
+
+def _rerank(question: str, docs_with_scores: list) -> list:
+    """
+    Rerank retrieved chunks using BGE reranker.
+
+    Takes the top-50 docs from Qdrant, scores each one against the question
+    using the cross-encoder, and returns the top RERANKER_TOP_N docs sorted
+    by reranker score descending.
+    """
+    reranker = _get_reranker()
+
+    # Build (query, passage) pairs — reranker needs clean text, not enriched header
+    pairs = []
+    for doc, _ in docs_with_scores:
+        # Use original_content if available (clean text without the context header)
+        text = doc.metadata.get("original_content") or doc.page_content
+        pairs.append([question, text])
+
+    scores = reranker.compute_score(pairs, normalize=True)
+
+    # Zip scores back with docs
+    scored = sorted(
+        zip(scores, docs_with_scores),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+    top_n = scored[: Config.RERANKER_TOP_N]
+
+    logger.info(f"  Reranker kept top {len(top_n)} / {len(docs_with_scores)} chunks")
+    for rank, (score, (doc, _)) in enumerate(top_n, 1):
+        src = doc.metadata.get("source", "N/A")
+        logger.info(f"  Rank {rank:02d} | score={score:.4f} | {os.path.basename(str(src))}")
+
+    # Return just the docs in ranked order
+    return [doc for _, (doc, _) in top_n]
 
 
 def _get_llm():
@@ -269,13 +318,38 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
         logger.info("📚  END OF CHUNKS")
         logger.info("=" * 100)
 
+        # ── Rerank ─────────────────────────────────────────────
+        # If enabled: score all TOP_K chunks with the cross-encoder and keep
+        # only the best RERANKER_TOP_N to pass to the LLM. This gives much
+        # higher precision without changing anything else in the pipeline.
+        if Config.RERANKER_ENABLED:
+            logger.info("")
+            logger.info(f"🔀  RERANKING {len(docs_with_scores)} chunks → keeping top {Config.RERANKER_TOP_N}...")
+            reranked_docs = _rerank(question, docs_with_scores)
+            logger.info(f"✅ Reranking complete — {len(reranked_docs)} chunks forwarded to LLM")
+        else:
+            logger.info("Reranker disabled — using raw similarity order")
+            reranked_docs = [doc for doc, _ in docs_with_scores]
+
         # ── Build retriever ────────────────────────────────────
+        # We already have the final docs — use a simple lambda retriever
+        # so the existing chain code needs zero changes.
         logger.info("")
         logger.info("Creating retriever and chains...")
-        retriever = vectordb.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": Config.TOP_K},
-        )
+        from langchain_core.retrievers import BaseRetriever
+        from langchain_core.callbacks import CallbackManagerForRetrieverRun
+        from langchain_core.documents import Document as LCDocument
+
+        class _StaticRetriever(BaseRetriever):
+            """Wraps a pre-computed list of docs so the LangChain chain works unchanged."""
+            docs: list
+
+            def _get_relevant_documents(
+                self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+            ) -> list:
+                return self.docs
+
+        retriever = _StaticRetriever(docs=reranked_docs)
 
         # ── Deferred imports for chain building ────────────────
         from langchain_classic.chains import create_retrieval_chain

@@ -100,7 +100,29 @@ class Config:
     TOP_K = int(
         os.getenv(
             "TOP_K",
-            "5"
+            "50"
+        )
+    )
+
+
+    # ==============================
+    # Reranker
+    # ==============================
+
+    RERANKER_ENABLED = os.getenv(
+        "RERANKER_ENABLED",
+        "True"
+    ).strip().lower() == "true"
+
+    RERANKER_MODEL = os.getenv(
+        "RERANKER_MODEL",
+        "BAAI/bge-reranker-v2-m3"
+    ).strip()
+
+    RERANKER_TOP_N = int(
+        os.getenv(
+            "RERANKER_TOP_N",
+            "10"
         )
     )
 
