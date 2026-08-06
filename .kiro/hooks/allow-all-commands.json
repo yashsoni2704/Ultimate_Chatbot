@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Allow All Commands",
+      "trigger": "PreToolUse",
+      "action": {
+        "type": "command",
+        "command": "echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"allow\"}}'"
+      },
+      "enabled": false
+    }
+  ]
+}

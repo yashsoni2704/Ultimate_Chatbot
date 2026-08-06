@@ -23,7 +23,7 @@ const userGreetingName  = document.getElementById("userGreetingName");
 
 // Autoplay toggle
 const autoplayBtn   = document.getElementById("autoplayBtn");
-const autoplayPill  = document.getElementById("autoplayPill");
+const darkModeBtn   = document.getElementById("darkModeBtn");
 
 // Lead capture modal
 const leadModal      = document.getElementById("leadModal");
@@ -49,6 +49,10 @@ let visitorName = "";
 
 // ── Autoplay state ────────────────────────────────────────────────────────
 let autoplayEnabled = localStorage.getItem(LS_AUTOPLAY_KEY) === "true";
+
+// ── Dark mode state ───────────────────────────────────────────────────────
+const LS_DARK_KEY   = "docmind_darkmode";
+let darkModeEnabled = localStorage.getItem(LS_DARK_KEY) === "true";
 
 // ── TTS language — resolved once at startup ───────────────────────────────
 // Supported BCP-47 tags → Web Speech API lang codes.
@@ -77,6 +81,7 @@ window.addEventListener("load", () => {
     questionInput.focus();
     detectTTSLanguage();     // resolve browser language → ttsLang
     initAutoplay();          // restore toggle state + wire button
+    initDarkMode();          // restore dark mode + wire button
     initVisitor();           // UUID + name handshake
     loadKnowledgeBase();
     startKbPolling();
@@ -119,22 +124,43 @@ function detectTTSLanguage() {
 // ===============================
 
 function initAutoplay() {
-    _renderAutoplay();
+    _renderToggle(autoplayBtn, autoplayEnabled);
     autoplayBtn.addEventListener("click", () => {
         autoplayEnabled = !autoplayEnabled;
         localStorage.setItem(LS_AUTOPLAY_KEY, autoplayEnabled);
-        _renderAutoplay();
+        _renderToggle(autoplayBtn, autoplayEnabled);
     });
 }
 
-function _renderAutoplay() {
-    if (autoplayEnabled) {
-        autoplayBtn.classList.add("autoplay-on");
-        autoplayPill.textContent = "ON";
-    } else {
-        autoplayBtn.classList.remove("autoplay-on");
-        autoplayPill.textContent = "OFF";
-    }
+function _renderToggle(btn, state) {
+    btn.setAttribute("aria-checked", state ? "true" : "false");
+}
+
+// ===============================
+// Dark Mode Toggle
+// ===============================
+
+const MOON_SVG = `<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>`;
+const SUN_SVG  = `<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>`;
+
+function initDarkMode() {
+    if (darkModeEnabled) document.body.classList.add("dark-mode");
+    _renderToggle(darkModeBtn, darkModeEnabled);
+    _swapDarkIcon(darkModeEnabled);
+
+    darkModeBtn.addEventListener("click", () => {
+        darkModeEnabled = !darkModeEnabled;
+        localStorage.setItem(LS_DARK_KEY, darkModeEnabled);
+        document.body.classList.toggle("dark-mode", darkModeEnabled);
+        _renderToggle(darkModeBtn, darkModeEnabled);
+        _swapDarkIcon(darkModeEnabled);
+    });
+}
+
+function _swapDarkIcon(isDark) {
+    const icon = document.getElementById("darkModeIcon");
+    if (!icon) return;
+    icon.innerHTML = isDark ? SUN_SVG : MOON_SVG;
 }
 
 // ===============================

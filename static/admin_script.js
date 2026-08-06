@@ -510,6 +510,9 @@ modalConfirm.addEventListener("click", async () => {
         if (data.status === "success") {
             showUploadStatus(`🗑️ ${data.message}`, "success");
             loadKnowledgeBase();
+        } else if (res.status === 409) {
+            // File is locked — make the message prominent and persistent
+            showUploadStatus(`🔒 ${data.message}`, "error");
         } else {
             showUploadStatus(`❌ ${data.message}`, "error");
         }

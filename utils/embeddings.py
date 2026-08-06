@@ -264,6 +264,24 @@ def delete_document_chunks(filename: str) -> int:
 
         # Step 2 — delete from standby
         logger.info(f"Step 2/3 — Deleting '{filename}' from standby …")
+
+        # If standby doesn't exist yet (source was empty → clone skipped creation),
+        # create it now so the delete/count calls don't 404.
+        existing_cols = {c.name for c in client.get_collections().collections}
+        if standby_col not in existing_cols:
+            from qdrant_client.models import Distance, VectorParams
+            # We don't know vector size yet (no vectors exist), so use a placeholder.
+            # The collection will be properly recreated on next upload anyway.
+            client.create_collection(
+                collection_name = standby_col,
+                vectors_config  = VectorParams(size=1024, distance=Distance.COSINE),
+            )
+            logger.info(f"   Created empty standby '{standby_col}' (nothing to delete)")
+            # Switch active slot and exit cleanly — nothing to delete
+            logger.info("Step 3/3 — Switching …")
+            _write_active_slot(standby)
+            logger.info(f"✅ Delete complete (document had no vectors) — new active: {standby.upper()}")
+            return 0
         delete_filter = Filter(must=[
             FieldCondition(key="metadata.source", match=MatchValue(value=filename))
         ])

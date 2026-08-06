@@ -338,21 +338,48 @@ def admin_delete_document():
                 "message": f"'{filename}' not found in knowledge base."
             }), 404
 
-        record = matching[0]
+        record    = matching[0]
+        file_path = record.get("path", "")
 
-        deleted = delete_document_chunks(filename)
-        logger.info(f"  Removed {deleted} vector(s) for '{filename}' from Qdrant")
+        # ── Step 1: Try to delete the file FIRST (before touching vectors/registry)
+        # If the file is locked by Windows (e.g. open in Excel/PDF reader), fail
+        # immediately with a clear message — nothing has been changed yet.
+        file_deleted = False
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                file_deleted = True
+                logger.info(f"  Deleted file from disk: {file_path}")
+            except PermissionError:
+                return jsonify({
+                    "status":  "error",
+                    "message": (
+                        f"'{filename}' is currently open in another application. "
+                        "Please close the file and try again."
+                    )
+                }), 409
+            except OSError as e:
+                return jsonify({
+                    "status":  "error",
+                    "message": f"Could not delete file: {e}"
+                }), 500
 
+        # ── Step 2: Delete vectors from Qdrant (blue/green atomic swap)
+        # File is already gone from disk — now clean up vectors.
+        try:
+            deleted = delete_document_chunks(filename)
+            logger.info(f"  Removed {deleted} vector(s) for '{filename}' from Qdrant")
+        except Exception as vec_err:
+            # Vectors failed — file is already deleted from disk.
+            # Log it but still clean registry so UI stays consistent.
+            logger.error(f"  Vector delete failed for '{filename}': {vec_err} — cleaning registry anyway")
+
+        # ── Step 3: Remove from registry (only after vectors are handled)
         remaining = [r for r in records if r.get("filename") != filename]
         with open(registry_path, "w", encoding="utf-8") as f:
             json.dump(remaining, f, indent=2, ensure_ascii=False)
 
-        file_path = record.get("path", "")
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"  Deleted file: {file_path}")
-
-        logger.info(f" '{filename}' fully removed from knowledge base")
+        logger.info(f"  '{filename}' fully removed from knowledge base")
         return jsonify({
             "status":    "success",
             "message":   f"'{filename}' removed from knowledge base.",

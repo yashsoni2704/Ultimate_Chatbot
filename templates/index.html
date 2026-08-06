@@ -125,17 +125,31 @@
                     </div>
 
                     <!-- Autoplay toggle -->
-                    <button class="autoplay-btn" id="autoplayBtn" title="Autoplay responses">
-                        <span class="autoplay-icon">
-                            <!-- Speaker wave icon -->
+                    <div class="header-toggle-group" title="Autoplay responses">
+                        <span class="header-toggle-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
                             </svg>
                         </span>
-                        <span class="autoplay-label" id="autoplayLabel">Autoplay</span>
-                        <span class="autoplay-pill" id="autoplayPill">OFF</span>
-                    </button>
+                        <span class="header-toggle-label">Autoplay</span>
+                        <button class="toggle-switch" id="autoplayBtn" role="switch" aria-checked="false" aria-label="Autoplay">
+                            <span class="toggle-thumb"></span>
+                        </button>
+                    </div>
+
+                    <!-- Dark mode toggle -->
+                    <div class="header-toggle-group" title="Dark mode">
+                        <span class="header-toggle-icon">
+                            <svg id="darkModeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                            </svg>
+                        </span>
+                        <span class="header-toggle-label">Dark</span>
+                        <button class="toggle-switch" id="darkModeBtn" role="switch" aria-checked="false" aria-label="Dark mode">
+                            <span class="toggle-thumb"></span>
+                        </button>
+                    </div>
 
                     <button class="clear-btn" id="clearBtn" title="Clear chat">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
