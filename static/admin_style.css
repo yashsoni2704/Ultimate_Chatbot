@@ -1250,3 +1250,137 @@ code {
     flex-direction: column;
     gap: 0;
 }
+
+
+/* ============================================================
+   UNIFIED KB MODULE — New Upload button + topbar
+   ============================================================ */
+
+/* Top bar row */
+.kb-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.kb-total-count {
+    font-size: 13px;
+    color: #64748b;
+    font-weight: 500;
+}
+
+/* ── New Upload dropdown button ── */
+.kb-upload-dropdown {
+    position: relative;
+}
+
+.kb-new-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: opacity 0.18s, transform 0.15s;
+    white-space: nowrap;
+}
+.kb-new-btn svg:first-child { width: 16px; height: 16px; flex-shrink: 0; }
+.kb-new-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+
+.kb-new-chevron {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+}
+
+/* Dropdown menu */
+.kb-upload-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    min-width: 220px;
+    background: #1a1a2e;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    overflow: hidden;
+    z-index: 50;
+    animation: menuIn 0.18s ease;
+}
+
+@keyframes menuIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.kb-upload-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 14px 18px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    color: #e2e8f0;
+    transition: background 0.15s;
+    text-align: left;
+}
+.kb-upload-option:hover { background: rgba(255,255,255,0.07); }
+.kb-upload-option + .kb-upload-option { border-top: 1px solid rgba(255,255,255,0.06); }
+
+.kb-upload-option svg {
+    width: 18px;
+    height: 18px;
+    stroke: #fbbf24;
+    flex-shrink: 0;
+}
+
+.kb-upload-option strong {
+    display: block;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #f1f5f9;
+    line-height: 1.3;
+}
+
+.kb-option-hint {
+    display: block;
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 2px;
+    font-weight: 400;
+}
+
+/* ── Close button inside upload forms ── */
+.kb-form-close {
+    margin-left: auto;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 7px;
+    cursor: pointer;
+    color: #64748b;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+.kb-form-close svg { width: 14px; height: 14px; }
+.kb-form-close:hover { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }
+
+/* upload-card used as flex column when visible */
+#kbFormDoc, #kbFormUrl { flex-direction: column; }

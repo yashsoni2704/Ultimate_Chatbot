@@ -34,6 +34,7 @@ let pendingDelete = null;
 // ── All ingested docs (split into files + urls) ──────────────────────────
 let _allDocs  = [];  // file documents
 let _allUrls  = [];  // url entries
+let _allItems = [];  // combined — used by unified table
 let _adminKbLastCount = -1;
 
 
@@ -84,28 +85,216 @@ function escHtml(str) {
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  KB TAB SWITCHER
+//  UPLOAD MENU TOGGLE
 // ════════════════════════════════════════════════════════════════════════════
 
-function switchKbTab(tab) {
-    // tab = 'docs' | 'urls'
-    const docsPanel = document.getElementById("kbPanelDocs");
-    const urlsPanel = document.getElementById("kbPanelUrls");
-    const docBtn    = document.getElementById("tabDocBtn");
-    const urlBtn    = document.getElementById("tabUrlBtn");
+function toggleUploadMenu() {
+    const menu    = document.getElementById("kbUploadMenu");
+    const chevron = document.getElementById("kbNewChevron");
+    const isOpen  = menu.style.display !== "none";
+    menu.style.display    = isOpen ? "none" : "block";
+    chevron.style.transform = isOpen ? "" : "rotate(180deg)";
+}
 
-    if (tab === "docs") {
-        if (docsPanel) docsPanel.style.display = "block";
-        if (urlsPanel) urlsPanel.style.display = "none";
-        if (docBtn)    docBtn.classList.add("active");
-        if (urlBtn)    urlBtn.classList.remove("active");
-    } else {
-        if (docsPanel) docsPanel.style.display = "none";
-        if (urlsPanel) urlsPanel.style.display = "block";
-        if (docBtn)    docBtn.classList.remove("active");
-        if (urlBtn)    urlBtn.classList.add("active");
+function openUploadForm(type) {
+    // Close the dropdown menu
+    document.getElementById("kbUploadMenu").style.display = "none";
+    document.getElementById("kbNewChevron").style.transform = "";
+
+    const panel  = document.getElementById("kbUploadPanel");
+    const docFrm = document.getElementById("kbFormDoc");
+    const urlFrm = document.getElementById("kbFormUrl");
+
+    panel.style.display  = "block";
+    docFrm.style.display = type === "doc" ? "flex" : "none";
+    urlFrm.style.display = type === "url" ? "flex" : "none";
+
+    // Scroll panel into view smoothly
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function closeUploadForm() {
+    const panel  = document.getElementById("kbUploadPanel");
+    panel.style.display = "none";
+    document.getElementById("kbFormDoc").style.display = "none";
+    document.getElementById("kbFormUrl").style.display = "none";
+}
+
+// Close dropdown when clicking outside
+document.addEventListener("click", (e) => {
+    const dropdown = document.getElementById("kbUploadDropdown");
+    if (dropdown && !dropdown.contains(e.target)) {
+        const menu    = document.getElementById("kbUploadMenu");
+        const chevron = document.getElementById("kbNewChevron");
+        if (menu)    menu.style.display      = "none";
+        if (chevron) chevron.style.transform = "";
+    }
+});
+
+// Kept for backward-compat (old HTML may still reference it)
+function switchKbTab() {}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  KNOWLEDGE BASE — unified load, search & render
+// ════════════════════════════════════════════════════════════════════════════
+
+async function loadKnowledgeBase() {
+    const kbLoading  = document.getElementById("kbLoading");
+    const kbEmpty    = document.getElementById("kbEmpty");
+    const kbNoRes    = document.getElementById("kbNoResults");
+    const kbTableWrap= document.getElementById("kbTableWrap");
+    const refreshBtn = document.getElementById("refreshBtn");
+
+    if (kbLoading)   kbLoading.style.display   = "flex";
+    if (kbEmpty)     kbEmpty.style.display      = "none";
+    if (kbNoRes)     kbNoRes.style.display      = "none";
+    if (kbTableWrap) kbTableWrap.style.display  = "none";
+    if (refreshBtn)  refreshBtn.classList.add("spinning");
+
+    try {
+        const res  = await fetch(`${API}/admin/documents`, { credentials: "include" });
+        const data = await res.json();
+        const docs = data.documents || [];
+        _adminKbLastCount = docs.length;
+
+        _allDocs  = docs.filter(d => { const n = d.filename||d.name||""; return !n.startsWith("http://") && !n.startsWith("https://"); });
+        _allUrls  = docs.filter(d => { const n = d.filename||d.name||""; return  n.startsWith("http://") || n.startsWith("https://"); });
+        _allItems = [...docs];
+
+        updateSidebarStats(docs);
+        filterUnifiedTable();  // apply any existing search query
+    } catch (err) {
+        _allItems = [];
+        filterUnifiedTable();
+    } finally {
+        if (kbLoading) kbLoading.style.display = "none";
+        if (refreshBtn) refreshBtn.classList.remove("spinning");
     }
 }
+
+function updateSidebarStats(docs) {
+    const totalChunks = docs.reduce((sum, d) => sum + (d.chunks || 0), 0);
+    if (statTotal)  statTotal.textContent  = docs.length;
+    if (statChunks) statChunks.textContent = totalChunks > 999 ? (totalChunks/1000).toFixed(1)+"k" : totalChunks;
+
+    const countEl = document.getElementById("kbTotalCount");
+    if (countEl) countEl.textContent = docs.length + " item" + (docs.length !== 1 ? "s" : "") + " in knowledge base";
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────
+function startAdminKbPolling() {
+    setInterval(async () => {
+        if (document.visibilityState === "hidden") return;
+        try {
+            const res  = await fetch(`${API}/admin/documents`, { credentials: "include" });
+            const data = await res.json();
+            const docs = data.documents || [];
+            if (docs.length !== _adminKbLastCount) {
+                _adminKbLastCount = docs.length;
+                _allDocs  = docs.filter(d => { const n = d.filename||d.name||""; return !n.startsWith("http"); });
+                _allUrls  = docs.filter(d => { const n = d.filename||d.name||""; return  n.startsWith("http"); });
+                _allItems = [...docs];
+                filterUnifiedTable();
+                updateSidebarStats(docs);
+            }
+        } catch (_) {}
+    }, 10000);
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  UNIFIED TABLE
+// ════════════════════════════════════════════════════════════════════════════
+
+function filterUnifiedTable() {
+    const input   = document.getElementById("kbSearchInput");
+    const clearEl = document.getElementById("kbSearchClear");
+    const q       = (input ? input.value : "").toLowerCase().trim();
+
+    if (clearEl) clearEl.style.display = q ? "flex" : "none";
+
+    // Show all items when the box is empty or has just 1 character
+    const filtered = (!q || q.length >= 1)
+        ? (q ? _allItems.filter(d => (d.filename||d.name||"").toLowerCase().includes(q)) : _allItems)
+        : _allItems;
+
+    renderUnifiedTable(filtered);
+}
+
+function clearKbSearch() {
+    const input = document.getElementById("kbSearchInput");
+    if (input) input.value = "";
+    filterUnifiedTable();
+}
+
+function renderUnifiedTable(items) {
+    const kbEmpty     = document.getElementById("kbEmpty");
+    const kbNoRes     = document.getElementById("kbNoResults");
+    const kbTableWrap = document.getElementById("kbTableWrap");
+    const tbody       = document.getElementById("kbTableBody");
+    const countEl     = document.getElementById("kbItemCount");
+    const input       = document.getElementById("kbSearchInput");
+    const q           = (input ? input.value : "").trim();
+
+    if (countEl) countEl.textContent = _allItems.length + " item" + (_allItems.length !== 1 ? "s" : "");
+
+    if (_allItems.length === 0) {
+        if (kbEmpty)     kbEmpty.style.display     = "flex";
+        if (kbNoRes)     kbNoRes.style.display      = "none";
+        if (kbTableWrap) kbTableWrap.style.display  = "none";
+        return;
+    }
+
+    if (items.length === 0) {
+        if (kbEmpty)     kbEmpty.style.display     = "none";
+        if (kbNoRes)     kbNoRes.style.display      = "flex";
+        if (kbTableWrap) kbTableWrap.style.display  = "none";
+        return;
+    }
+
+    if (kbEmpty)     kbEmpty.style.display     = "none";
+    if (kbNoRes)     kbNoRes.style.display      = "none";
+    if (kbTableWrap) kbTableWrap.style.display  = "block";
+
+    tbody.innerHTML = "";
+    items.forEach(doc => {
+        const name    = doc.filename || doc.name || "Unknown";
+        const isUrl   = name.startsWith("http://") || name.startsWith("https://");
+        const ft      = getFileType(name);
+        const tr      = document.createElement("tr");
+
+        let displayName = name;
+        let nameCell;
+        if (isUrl) {
+            let short = name;
+            try { const u = new URL(name); short = u.hostname + (u.pathname !== "/" ? u.pathname : ""); } catch(_) {}
+            nameCell = `<div class="td-filename"><div class="td-file-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div><a class="td-file-name td-url-link" href="${escHtml(name)}" target="_blank" rel="noopener" title="${escHtml(name)}">${escHtml(short)}</a></div>`;
+        } else {
+            nameCell = `<div class="td-filename"><div class="td-file-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div><span class="td-file-name" title="${escHtml(name)}">${escHtml(name)}</span></div>`;
+        }
+
+        tr.innerHTML = `
+            <td>${nameCell}</td>
+            <td><span class="type-badge" style="background:${ft.bg};color:${ft.color};border-color:${ft.color}44;">${ft.label}</span></td>
+            <td><span class="chunks-badge">${doc.chunks || "&#8212;"}</span></td>
+            <td><span class="date-text">${formatDate(doc.ingested_at || doc.date || "&#8212;")}</span></td>
+            <td><button class="delete-btn" data-filename="${escHtml(name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Remove</button></td>`;
+        tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", () => openDeleteModal(btn.dataset.filename));
+    });
+}
+
+// ── Stubs kept so older code paths don't throw ────────────────────────────
+function renderDocsTable() {}
+function renderUrlsTable() {}
+function filterDocsTable()  { filterUnifiedTable(); }
+function filterUrlsTable()  { filterUnifiedTable(); }
+function clearDocsSearch()  { clearKbSearch(); }
+function clearUrlsSearch()  { clearKbSearch(); }
 
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -238,241 +427,7 @@ function showUploadStatus(msg, type) { uploadStatus.textContent = msg; uploadSta
 function hideUploadStatus()          { uploadStatus.style.display = "none"; uploadStatus.textContent = ""; uploadStatus.className = "upload-status"; }
 
 
-// ════════════════════════════════════════════════════════════════════════════
-//  KNOWLEDGE BASE — load, split & render
-// ════════════════════════════════════════════════════════════════════════════
-
-async function loadKnowledgeBase() {
-    // Show spinners in both panels
-    const docsLoading   = document.getElementById("docsLoading");
-    const urlsLoading   = document.getElementById("urlsLoading");
-    if (docsLoading) docsLoading.style.display = "flex";
-    if (urlsLoading) urlsLoading.style.display = "flex";
-    if (refreshBtn)  refreshBtn.classList.add("spinning");
-
-    try {
-        const res  = await fetch(`${API}/admin/documents`, { credentials: "include" });
-        const data = await res.json();
-        const docs = data.documents || [];
-        _adminKbLastCount = docs.length;
-
-        // Split into files vs URLs
-        _allDocs = docs.filter(d => {
-            const name = d.filename || d.name || "";
-            return !name.startsWith("http://") && !name.startsWith("https://");
-        });
-        _allUrls = docs.filter(d => {
-            const name = d.filename || d.name || "";
-            return name.startsWith("http://") || name.startsWith("https://");
-        });
-
-        renderDocsTable(_allDocs);
-        renderUrlsTable(_allUrls);
-        updateSidebarStats(docs);
-    } catch (err) {
-        renderDocsTable([]);
-        renderUrlsTable([]);
-    } finally {
-        if (docsLoading) docsLoading.style.display = "none";
-        if (urlsLoading) urlsLoading.style.display = "none";
-        if (refreshBtn)  refreshBtn.classList.remove("spinning");
-    }
-}
-
-function updateSidebarStats(docs) {
-    const totalChunks = docs.reduce((sum, d) => sum + (d.chunks || 0), 0);
-    if (statTotal)  statTotal.textContent  = docs.length;
-    if (statChunks) statChunks.textContent = totalChunks > 999
-        ? (totalChunks / 1000).toFixed(1) + "k" : totalChunks;
-}
-
-// ── Polling ───────────────────────────────────────────────────────────────
-function startAdminKbPolling() {
-    setInterval(async () => {
-        if (document.visibilityState === "hidden") return;
-        try {
-            const res  = await fetch(`${API}/admin/documents`, { credentials: "include" });
-            const data = await res.json();
-            const docs = data.documents || [];
-            if (docs.length !== _adminKbLastCount) {
-                _adminKbLastCount = docs.length;
-                _allDocs = docs.filter(d => { const n = d.filename||d.name||""; return !n.startsWith("http"); });
-                _allUrls = docs.filter(d => { const n = d.filename||d.name||""; return  n.startsWith("http"); });
-                filterDocsTable();
-                filterUrlsTable();
-                updateSidebarStats(docs);
-            }
-        } catch (_) {}
-    }, 10000);
-}
-
-
-// ════════════════════════════════════════════════════════════════════════════
-//  DOCS TABLE  (files only)
-// ════════════════════════════════════════════════════════════════════════════
-
-function renderDocsTable(docs) {
-    const empty     = document.getElementById("docsEmpty");
-    const noResults = document.getElementById("docsNoResults");
-    const tableWrap = document.getElementById("docsTableWrap");
-    const tbody     = document.getElementById("docsTableBody");
-    const countEl   = document.getElementById("docsCount");
-
-    if (countEl) countEl.textContent = _allDocs.length + " document" + (_allDocs.length !== 1 ? "s" : "");
-
-    if (_allDocs.length === 0) {
-        if (empty)     empty.style.display     = "flex";
-        if (noResults) noResults.style.display = "none";
-        if (tableWrap) tableWrap.style.display = "none";
-        return;
-    }
-
-    if (docs.length === 0) {
-        // search returned nothing
-        if (empty)     empty.style.display     = "none";
-        if (noResults) noResults.style.display = "flex";
-        if (tableWrap) tableWrap.style.display = "none";
-        return;
-    }
-
-    if (empty)     empty.style.display     = "none";
-    if (noResults) noResults.style.display = "none";
-    if (tableWrap) tableWrap.style.display = "block";
-    tbody.innerHTML = "";
-
-    docs.forEach(doc => {
-        const filename = doc.filename || doc.name || "Unknown";
-        const ft  = getFileType(filename);
-        const tr  = document.createElement("tr");
-        tr.innerHTML = `
-            <td>
-                <div class="td-filename">
-                    <div class="td-file-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div>
-                    <span class="td-file-name" title="${escHtml(filename)}">${escHtml(filename)}</span>
-                </div>
-            </td>
-            <td><span class="type-badge" style="background:${ft.bg};color:${ft.color};border-color:${ft.color}44;">${ft.label}</span></td>
-            <td><span class="chunks-badge">${doc.chunks || "—"}</span></td>
-            <td><span class="date-text">${formatDate(doc.ingested_at || doc.date || "—")}</span></td>
-            <td>
-                <button class="delete-btn" data-filename="${escHtml(filename)}">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6l-1 14H6L5 6"/>
-                        <path d="M10 11v6M14 11v6"/>
-                        <path d="M9 6V4h6v2"/>
-                    </svg>
-                    Remove
-                </button>
-            </td>`;
-        tbody.appendChild(tr);
-    });
-
-    tbody.querySelectorAll(".delete-btn").forEach(btn => {
-        btn.addEventListener("click", () => openDeleteModal(btn.dataset.filename));
-    });
-}
-
-// Live search for docs
-function filterDocsTable() {
-    const q     = (document.getElementById("docsSearchInput")?.value || "").toLowerCase().trim();
-    const clear = document.getElementById("docsSearchClear");
-    if (clear) clear.style.display = q ? "flex" : "none";
-    const filtered = q ? _allDocs.filter(d => (d.filename||d.name||"").toLowerCase().includes(q)) : _allDocs;
-    renderDocsTable(filtered);
-}
-
-function clearDocsSearch() {
-    const inp = document.getElementById("docsSearchInput");
-    if (inp) inp.value = "";
-    filterDocsTable();
-}
-
-
-// ════════════════════════════════════════════════════════════════════════════
-//  URLS TABLE  (URL entries only)
-// ════════════════════════════════════════════════════════════════════════════
-
-function renderUrlsTable(urls) {
-    const empty     = document.getElementById("urlsEmpty");
-    const noResults = document.getElementById("urlsNoResults");
-    const tableWrap = document.getElementById("urlsTableWrap");
-    const tbody     = document.getElementById("urlsTableBody");
-    const countEl   = document.getElementById("urlsCount");
-
-    if (countEl) countEl.textContent = _allUrls.length + " URL" + (_allUrls.length !== 1 ? "s" : "");
-
-    if (_allUrls.length === 0) {
-        if (empty)     empty.style.display     = "flex";
-        if (noResults) noResults.style.display = "none";
-        if (tableWrap) tableWrap.style.display = "none";
-        return;
-    }
-
-    if (urls.length === 0) {
-        if (empty)     empty.style.display     = "none";
-        if (noResults) noResults.style.display = "flex";
-        if (tableWrap) tableWrap.style.display = "none";
-        return;
-    }
-
-    if (empty)     empty.style.display     = "none";
-    if (noResults) noResults.style.display = "none";
-    if (tableWrap) tableWrap.style.display = "block";
-    tbody.innerHTML = "";
-
-    urls.forEach(doc => {
-        const url = doc.filename || doc.name || "Unknown";
-        let displayName = url;
-        try {
-            const u = new URL(url);
-            displayName = u.hostname + (u.pathname !== "/" ? u.pathname : "");
-        } catch (_) {}
-
-        const ft = getFileType(url);
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-            <td>
-                <div class="td-filename">
-                    <div class="td-file-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div>
-                    <a class="td-file-name td-url-link" href="${escHtml(url)}" target="_blank" rel="noopener" title="${escHtml(url)}">${escHtml(displayName)}</a>
-                </div>
-            </td>
-            <td><span class="chunks-badge">${doc.chunks || "—"}</span></td>
-            <td><span class="date-text">${formatDate(doc.ingested_at || doc.date || "—")}</span></td>
-            <td>
-                <button class="delete-btn" data-filename="${escHtml(url)}">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6l-1 14H6L5 6"/>
-                        <path d="M10 11v6M14 11v6"/>
-                        <path d="M9 6V4h6v2"/>
-                    </svg>
-                    Remove
-                </button>
-            </td>`;
-        tbody.appendChild(tr);
-    });
-
-    tbody.querySelectorAll(".delete-btn").forEach(btn => {
-        btn.addEventListener("click", () => openDeleteModal(btn.dataset.filename));
-    });
-}
-
-// Live search for URLs
-function filterUrlsTable() {
-    const q     = (document.getElementById("urlsSearchInput")?.value || "").toLowerCase().trim();
-    const clear = document.getElementById("urlsSearchClear");
-    if (clear) clear.style.display = q ? "flex" : "none";
-    const filtered = q ? _allUrls.filter(d => (d.filename||d.name||"").toLowerCase().includes(q)) : _allUrls;
-    renderUrlsTable(filtered);
-}
-
-function clearUrlsSearch() {
-    const inp = document.getElementById("urlsSearchInput");
-    if (inp) inp.value = "";
-    filterUrlsTable();
-}
+// ── (unified KB functions defined above) ──────────────────────────────────
 
 
 // ════════════════════════════════════════════════════════════════════════════
