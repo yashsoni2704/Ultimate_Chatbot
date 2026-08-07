@@ -1579,13 +1579,38 @@ body.dark-mode .bot-message-body blockquote {
     color: #94a3b8;
 }
 body.dark-mode .bot-message-body hr { border-top-color: rgba(255,255,255,0.08); }
+body.dark-mode .bot-message-body .table-wrap {
+    border-color: rgba(165,180,252,0.38);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.22);
+}
 body.dark-mode .bot-message-body table { border-color: rgba(255,255,255,0.1); }
 body.dark-mode .bot-message-body th {
-    background: rgba(255,255,255,0.05);
-    color: #e2e8f0;
-    border-bottom-color: rgba(255,255,255,0.1);
+    background: transparent;
+    color: #ffffff;
+    border-right-color: rgba(255,255,255,0.2);
 }
-body.dark-mode .bot-message-body td { color: #cbd5e1; border-bottom-color: rgba(255,255,255,0.06); }
+body.dark-mode .bot-message-body td {
+    color: #dbeafe;
+    background: #171729;
+    border-bottom-color: rgba(255,255,255,0.09);
+    border-right-color: rgba(255,255,255,0.09);
+}
+body.dark-mode .bot-message-body td:first-child {
+    color: #e2e8f0;
+    background: #202035;
+}
+body.dark-mode .bot-message-body tbody tr:nth-child(even) td {
+    background: #1c1c30;
+}
+body.dark-mode .bot-message-body tbody tr:nth-child(even) td:first-child {
+    background: #272740;
+}
+body.dark-mode .bot-message-body tbody tr:hover td {
+    background: #29294a;
+}
+body.dark-mode .bot-message-body tbody tr:hover td:first-child {
+    background: #343456;
+}
 body.dark-mode .bot-message-body code:not(pre code) {
     background: rgba(99,102,241,0.15);
     color: #a5b4fc;

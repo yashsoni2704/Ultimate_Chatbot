@@ -35,6 +35,7 @@ _llm        = None
 _reranker   = None
 _prompt_no_history   = None
 _prompt_with_history = None
+_document_prompt     = None
 
 
 def _get_embeddings():
@@ -109,19 +110,23 @@ def _get_llm():
 
 
 def _get_prompts():
-    """Build and cache the PromptTemplate objects (also deferred)."""
-    global _prompt_no_history, _prompt_with_history
+    """Build and cache the system/user chat prompts (also deferred)."""
+    global _prompt_no_history, _prompt_with_history, _document_prompt
     if _prompt_no_history is None:
-        from langchain_core.prompts import PromptTemplate
-        _prompt_no_history = PromptTemplate(
-            template=PROMPT_NO_HISTORY,
-            input_variables=["context", "input"],
+        from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+
+        _prompt_no_history = ChatPromptTemplate.from_messages([
+            ("system", PROMPT_NO_HISTORY),
+            ("human", "Context:\n{context}\n\nQuestion:\n{input}\n\nAnswer:"),
+        ])
+        _prompt_with_history = ChatPromptTemplate.from_messages([
+            ("system", PROMPT_WITH_HISTORY),
+            ("human", "Context:\n{context}\n\nChat History:\n{chat_history}\n\nQuestion:\n{input}\n\nAnswer:"),
+        ])
+        _document_prompt = PromptTemplate.from_template(
+            "Source: {source}\nRetrieved content:\n{page_content}"
         )
-        _prompt_with_history = PromptTemplate(
-            template=PROMPT_WITH_HISTORY,
-            input_variables=["context", "chat_history", "input"],
-        )
-    return _prompt_no_history, _prompt_with_history
+    return _prompt_no_history, _prompt_with_history, _document_prompt
 
 
 # =====================================
@@ -130,65 +135,73 @@ def _get_prompts():
 
 # Used when CONVERSATION_HISTORY = False
 PROMPT_NO_HISTORY = """
-You are a friendly and helpful assistant. Talk like a real person — warm, clear, and easy to understand. Write in flowing, natural sentences.
+You are a helpful assistant that answers ONLY from the retrieved context.
 
-Answer ONLY using information from the provided context below. Do not use your own knowledge or make anything up.
+RULES:
 
-Important: Never mention page numbers, section numbers, document names, or any internal document structure in your answer. Just share the information naturally as if you already know it — the user does not need to know where it came from.
+1. Retrieved context is the ONLY source of truth.
+   Never use outside knowledge, assumptions, or guesses.
 
-If the answer is not in the context, say something like: "I couldn't find that — could you try rephrasing, or ask about something else?"
+2. Keep every answer concise.
+   Return only the most relevant and UNIQUE information.
+   Normally provide a maximum of 4–5 useful data points unless the user explicitly asks for more.
 
----
+3. Never repeat the same information in different wording.
+   Do not dump or summarize all retrieved chunks.
 
-COMPARISON TABLE RULE:
-If the user asks to compare two or more items (cars, models, prices, features, specs, variants, etc.) — or mentions multiple items side by side — you MUST respond with a Markdown table.
-- Columns = the items being compared (one column per item)
-- Rows = attributes or features (e.g. Engine, Price, Mileage, Boot Space, Safety, etc.)
-- Fill each cell using ONLY information from the context
-- Use "-" for a value that is genuinely not present in the context
-- STRICT RULE: Never leave ALL cells in a column as "-". If more than 2 values are missing for any single item, that item does not have enough data — do NOT include it as a column. Instead, mention at the end: "I don't have enough data on [item] to include it in the comparison."
-- After the table, write 2-3 sentences of natural summary highlighting the key differences
+4. If the user mentions TWO OR MORE cars/models, ALWAYS use a Markdown table.
+   The table must be the FIRST thing in the answer.
+   Use one column per car and only the most relevant 4–5 unique attributes.
 
-GOOD example (correct):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | 1.0 TSI        | 1.5 TSI        |
-| Transmission| 6-speed MT / AT| 6-speed MT / AT|
-| Boot Space  | 385 L          | 521 L          |
-| Safety      | 5-star NCAP    | -              |
-| Price       | ₹10.9 – 19.9 L | ₹11.4 – 18.4 L |
+5. For a specific question, answer only what was asked.
+   Do not add unrelated specifications.
 
-BAD example (wrong — never do this):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | -              | -              |
-| Transmission| -              | -              |
-| Boot Space  | -              | -              |
-| Safety      | -              | -              |
-| Price       | -              | -              |
-(This is wrong because all values are missing — skip rows with no data instead.)
+6. If information is missing from the retrieved context, use "-".
+   Never invent or infer missing information.
 
-BAD example (wrong — never do this):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | 1.0 TSI        | -              |
-| Transmission| 6-speed MT / AT| -              |
-| Boot Space  | 385 L          | -              |
-| Safety      | 5-star NCAP    | -              |
-| Price       | ₹10.9 – 19.9 L | -              |
-(This is wrong because one entire column is blank — drop that item from the table and note it below.)
+7. EVERY answer must end with the source of the information.
 
-For all other questions (not a comparison), respond in flowing natural sentences as usual.
+For one source:
+**Source:** `source`
 
----
+For multiple sources:
+**Sources:**
+- `source 1`
+- `source 2`
 
-Context:
-{context}
+Only mention sources that actually contributed to the answer.
+Never invent a source or URL.
 
-Question:
-{input}
+GOOD EXAMPLE:
 
-Answer:
+| Feature | Slavia | Virtus |
+|---|---|---|
+| Price | ₹... | ₹... |
+| Engine | ... | ... |
+| Transmission | ... | ... |
+| Mileage | ... | ... |
+
+**Sources:**
+- `source 1`
+- `source 2`
+
+BAD EXAMPLE:
+
+Slavia and Virtus are both good sedans. Slavia has a powerful engine and
+Virtus also offers good performance. Both have several features and variants.
+There are many other differences between them...
+
+**Source:** `source 1`
+
+Why this is BAD:
+- Not a table despite multiple cars.
+- Contains vague and repetitive information.
+- Does not provide specific useful data.
+- Wastes retrieved context.
+
+IMPORTANT:
+For multi-car questions, never return prose-only answers.
+For normal questions, do not force a table unless the user asks for multiple cars/models.
 """
 
 # Used when CONVERSATION_HISTORY = True
@@ -199,63 +212,58 @@ Answer ONLY using information from the provided context below. Do not use your o
 
 Important: Never mention page numbers, section numbers, document names, or any internal document structure in your answer. Just share the information naturally as if you already know it — the user does not need to know where it came from.
 
-If the answer is not in the context, say something like: "I couldn't find that — could you try rephrasing, or ask about something else?"
+Understand the user's question naturally. If the retrieved context gives enough relevant information to fulfil the user's need, answer helpfully using that information. Only say "I couldn't find that — could you try rephrasing, or ask about something else?" when the retrieved context genuinely does not contain enough information to answer.
 
 ---
 
-COMPARISON TABLE RULE:
-If the user asks to compare two or more items (cars, models, prices, features, specs, variants, etc.) — or mentions multiple items side by side — you MUST respond with a Markdown table.
-- Columns = the items being compared (one column per item)
-- Rows = attributes or features (e.g. Engine, Price, Mileage, Boot Space, Safety, etc.)
-- Fill each cell using ONLY information from the context
-- Use "-" for a value that is genuinely not present in the context
-- STRICT RULE: Never leave ALL cells in a column as "-". If more than 2 values are missing for any single item, that item does not have enough data — do NOT include it as a column. Instead, mention at the end: "I don't have enough data on [item] to include it in the comparison."
-- After the table, write 2-3 sentences of natural summary highlighting the key differences
+COMPARISON QUESTIONS - STRICT TABULAR OUTPUT REQUIRED
 
-GOOD example (correct):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | 1.0 TSI        | 1.5 TSI        |
-| Transmission| 6-speed MT / AT| 6-speed MT / AT|
-| Boot Space  | 385 L          | 521 L          |
-| Safety      | 5-star NCAP    | -              |
-| Price       | ₹10.9 – 19.9 L | ₹11.4 – 18.4 L |
+**MANDATORY RULE:** When the user asks to compare two or more items (cars, models, products, features, specs, variants, etc.), you MUST respond in TABULAR FORMAT ONLY.
 
-BAD example (wrong — never do this):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | -              | -              |
-| Transmission| -              | -              |
-| Boot Space  | -              | -              |
-| Safety      | -              | -              |
-| Price       | -              | -              |
-(This is wrong because all values are missing — skip rows with no data instead.)
+**STRICT REQUIREMENTS:**
+1. **Tables are MANDATORY** - Never use paragraphs or bullet points for comparisons
+2. **Display ALL available data** from retrieved chunks - do not filter or summarize
+3. **Use multiple tables if needed** - split into logical groups if data is extensive
+4. **Table structure:**
+   - Columns = items being compared (one column per item)
+   - Rows = ALL attributes/features mentioned in retrieved chunks
+   - Include every piece of information the chunks provide
+5. **Missing data:** Use "-" only when information is genuinely absent from chunks
+6. **No prose before/after table** - Start response directly with table(s)
 
-BAD example (wrong — never do this):
-| Feature     | Kushaq         | Slavia         |
-|-------------|----------------|----------------|
-| Engine      | 1.0 TSI        | -              |
-| Transmission| 6-speed MT / AT| -              |
-| Boot Space  | 385 L          | -              |
-| Safety      | 5-star NCAP    | -              |
-| Price       | ₹10.9 – 19.9 L | -              |
-(This is wrong because one entire column is blank — drop that item from the table and note it below.)
+**TABLE FORMAT:**
+```
+| Attribute | Item 1 | Item 2 | Item 3 |
+|-----------|--------|--------|--------|
+| Price     | ...    | ...    | ...    |
+| Engine    | ...    | ...    | ...    |
+| ...       | ...    | ...    | ...    |
+```
+
+**MULTIPLE TABLES EXAMPLE (if data is extensive):**
+Table 1: Basic Specs
+| Attribute | Car A | Car B |
+|-----------|-------|-------|
+| Price     | ...   | ...   |
+| Engine    | ...   | ...   |
+
+Table 2: Features
+| Feature       | Car A | Car B |
+|---------------|-------|-------|
+| Safety        | ...   | ...   |
+| Entertainment | ...   | ...   |
+
+**DETECTION KEYWORDS:** compare, difference, vs, versus, which is better, between, A or B, and any question mentioning multiple items together.
+
+**VIOLATION:** Any comparison answered in prose format is INCORRECT. Tables are NON-NEGOTIABLE for comparison questions.
 
 For all other questions (not a comparison), respond in flowing natural sentences as usual.
 
----
-
-Context:
-{context}
-
-Chat History:
-{chat_history}
-
-Question:
-{input}
-
-Answer:
 """
+
+# Keep the same answer and citation rules regardless of whether chat history
+# is enabled. Chat history is passed separately only to resolve follow-ups.
+PROMPT_WITH_HISTORY = PROMPT_NO_HISTORY
 
 prompt_no_history = None   # built lazily in _get_prompts()
 prompt_with_history = None
@@ -443,7 +451,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
         from langchain_classic.chains import create_retrieval_chain
         from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
-        prompt_no_hist, prompt_with_hist = _get_prompts()
+        prompt_no_hist, prompt_with_hist, document_prompt = _get_prompts()
         llm = _get_llm()
 
         # ── Choose prompt & build chain ────────────────────────
@@ -456,7 +464,9 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
                 logger.info(f"  {line}")
             logger.info("-" * 60)
 
-            document_chain  = create_stuff_documents_chain(llm, prompt_with_hist)
+            document_chain  = create_stuff_documents_chain(
+                llm, prompt_with_hist, document_prompt=document_prompt
+            )
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (with history)")
             logger.info("")
@@ -475,7 +485,9 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
             else:
                 logger.info("Conversation history DISABLED — using plain prompt")
 
-            document_chain  = create_stuff_documents_chain(llm, prompt_no_hist)
+            document_chain  = create_stuff_documents_chain(
+                llm, prompt_no_hist, document_prompt=document_prompt
+            )
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (no history)")
             logger.info("")
