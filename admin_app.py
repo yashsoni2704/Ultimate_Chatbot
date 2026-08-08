@@ -2,25 +2,38 @@
 """
 Admin Panel — standalone Flask app on port 5001.
 
-Responsibilities:
-  - Serve the admin UI         (GET  /admin/)
-  - Accept file uploads        (POST /admin/load-document)
-  - Scrape + ingest URL        (POST /admin/load-url)
-  - Job status polling         (GET  /admin/job/<job_id>)
-  - List ingested docs         (GET  /admin/documents)
-  - Delete a document          (POST /admin/delete-document)
-  - Analytics — chat stats     (GET  /admin/api/stats)
-  - Analytics — recent chats   (GET  /admin/api/chat-logs)
-  - Analytics — visitors       (GET  /admin/api/visitors)
-  - Analytics — bookings       (GET  /admin/api/bookings)
-  - Health check               (GET  /admin/health)
+Responsibilities
+----------------
+  GET  /admin/               Serve the admin UI
+  POST /admin/load-documents Accept 1–N file uploads, enqueue each as a job
+  POST /admin/load-url       Scrape / download a URL, enqueue as a job
+  GET  /admin/job/<id>       Poll individual job status
+  GET  /admin/queue          Poll the whole queue (all jobs, ordered)
+  GET  /admin/documents      List ingested documents
+  POST /admin/delete-document Delete a document
+  GET  /admin/api/stats      Chat + doc stats
+  GET  /admin/api/chat-logs  Recent chat logs (paginated)
+  GET  /admin/api/visitors   Visitor records
+  GET  /admin/api/bookings   Booking records
+  GET  /admin/api/users      User records
+  GET  /admin/health         Health check
 
-Heavy ingestion work (OCR + embedding) runs in a background thread so the
-HTTP request never times out.  The browser polls /admin/job/<id> every 2s.
+Upload Queue design
+-------------------
+  • A single background worker thread (daemon) pulls jobs from a
+    queue.Queue and processes them one at a time.
+  • This guarantees the blue/green pipeline is never called concurrently
+    from admin_app.py, which prevents the slot-collision bug.
+  • Each job has a unique job_id.  The browser polls /admin/job/<id>
+    for its individual status.  /admin/queue returns all jobs so the
+    UI can render the whole queue panel.
+  • Jobs are kept in memory; on restart the queue is empty (uploads
+    already on disk will be re-ingested if the admin refreshes).
 """
 
 import os
 import json
+import queue
 import uuid
 import threading
 from datetime import datetime
@@ -34,7 +47,6 @@ from utils.loader import process_document, load_url
 from utils.embeddings import get_all_documents, delete_document_chunks
 from utils.logger import get_logger
 
-# MongoDB helpers
 from db.connection import get_db
 from db.models import (
     ensure_indexes,
@@ -53,7 +65,6 @@ admin_app = Flask(
     template_folder="templates",
     static_folder="static",
 )
-
 admin_app.config["UPLOAD_FOLDER"] = Config.UPLOAD_FOLDER
 
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
@@ -61,40 +72,159 @@ os.makedirs(Config.QDRANT_PATH, exist_ok=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Background job store
+# Job store + serial ingestion queue
 # ════════════════════════════════════════════════════════════════════════════
 
-# job_id → { "status": "running"|"done"|"error", "message": str, "documents": list }
-_jobs: dict = {}
-_jobs_lock  = threading.Lock()
+# job_id → {
+#   "status":   "queued" | "processing" | "done" | "error",
+#   "filename": str,
+#   "message":  str,
+#   "queued_at": ISO str,
+#   "started_at": ISO str | None,
+#   "finished_at": ISO str | None,
+#   "documents": list   (populated on done)
+# }
+_jobs: dict        = {}
+_jobs_lock         = threading.Lock()
+_job_order: list   = []       # ordered list of job_ids for queue panel
+
+# FIFO work queue — worker picks one item at a time
+_work_queue: queue.Queue = queue.Queue()
 
 
-def _new_job() -> str:
+# ── Job CRUD helpers ─────────────────────────────────────────────────────────
+
+def _new_job(filename: str) -> str:
     job_id = uuid.uuid4().hex
     with _jobs_lock:
-        _jobs[job_id] = {"status": "running", "message": "", "documents": []}
+        _jobs[job_id] = {
+            "status":      "queued",
+            "filename":    filename,
+            "message":     "Waiting in queue…",
+            "queued_at":   datetime.now().isoformat(),
+            "started_at":  None,
+            "finished_at": None,
+            "documents":   [],
+        }
+        _job_order.append(job_id)
+    logger.info(f"  Job {job_id[:8]} queued: {filename}")
     return job_id
+
+
+def _start_job(job_id: str) -> None:
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id]["status"]     = "processing"
+            _jobs[job_id]["message"]    = "Processing…"
+            _jobs[job_id]["started_at"] = datetime.now().isoformat()
+    logger.info(f"  Job {job_id[:8]} processing")
 
 
 def _finish_job(job_id: str, message: str) -> None:
     with _jobs_lock:
-        _jobs[job_id] = {
-            "status":    "done",
-            "message":   message,
-            "documents": get_all_documents(),
-        }
+        if job_id in _jobs:
+            _jobs[job_id].update({
+                "status":      "done",
+                "message":     message,
+                "finished_at": datetime.now().isoformat(),
+                "documents":   get_all_documents(),
+            })
     logger.info(f"  Job {job_id[:8]} done: {message}")
 
 
 def _fail_job(job_id: str, error: str) -> None:
     with _jobs_lock:
-        _jobs[job_id] = {"status": "error", "message": error, "documents": []}
+        if job_id in _jobs:
+            _jobs[job_id].update({
+                "status":      "error",
+                "message":     error,
+                "finished_at": datetime.now().isoformat(),
+                "documents":   [],
+            })
     logger.error(f"  Job {job_id[:8]} failed: {error}")
 
 
 def _get_job(job_id: str) -> dict | None:
     with _jobs_lock:
-        return _jobs.get(job_id)
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def _get_queue_snapshot() -> list:
+    """Return an ordered list of all job dicts (copy, thread-safe)."""
+    with _jobs_lock:
+        return [dict(_jobs[jid]) | {"job_id": jid}
+                for jid in _job_order if jid in _jobs]
+
+
+# ── Worker thread ────────────────────────────────────────────────────────────
+
+def _queue_worker() -> None:
+    """
+    Daemon thread that processes one ingestion job at a time from _work_queue.
+    Guarantees the blue/green pipeline is never entered concurrently.
+    """
+    while True:
+        job_id, task_fn = _work_queue.get()
+        _start_job(job_id)
+        try:
+            message = task_fn()
+            _finish_job(job_id, message)
+        except Exception as exc:
+            _fail_job(job_id, str(exc))
+        finally:
+            _work_queue.task_done()
+
+
+_worker_thread = threading.Thread(
+    target=_queue_worker, daemon=True, name="ingestion-worker"
+)
+_worker_thread.start()
+logger.info("  Ingestion queue worker started")
+
+
+# ── Enqueue helpers ──────────────────────────────────────────────────────────
+
+def _enqueue_document(save_path: str, filename: str) -> str:
+    """Save path is already on disk. Enqueue processing. Returns job_id."""
+    job_id = _new_job(filename)
+
+    def _task():
+        if Config.LANGCHAIN_TRACING_V2:
+            from langsmith import trace as ls_trace
+            with ls_trace(
+                name=f"admin_ingest:{filename}",
+                run_type="chain",
+                project_name=Config.LANGCHAIN_PROJECT,
+                tags=["admin", "ingestion", "docmind"],
+                metadata={"filename": filename, "source": "admin_panel"},
+            ):
+                return process_document(save_path)
+        return process_document(save_path)
+
+    _work_queue.put((job_id, _task))
+    return job_id
+
+
+def _enqueue_url(url: str) -> str:
+    """Enqueue a URL ingestion job. Returns job_id."""
+    job_id = _new_job(url)
+
+    def _task():
+        if Config.LANGCHAIN_TRACING_V2:
+            from langsmith import trace as ls_trace
+            with ls_trace(
+                name=f"admin_ingest_url:{url}",
+                run_type="chain",
+                project_name=Config.LANGCHAIN_PROJECT,
+                tags=["admin", "ingestion", "url", "docmind"],
+                metadata={"url": url, "source": "admin_panel"},
+            ):
+                return load_url(url)
+        return load_url(url)
+
+    _work_queue.put((job_id, _task))
+    return job_id
 
 
 # ── Basic Auth ────────────────────────────────────────────────────────────────
@@ -112,20 +242,6 @@ def _check_auth(username: str, password: str) -> bool:
     if not _ADMIN_USER or not _ADMIN_PASS:
         return True
     return username == _ADMIN_USER and password == _ADMIN_PASS
-
-
-def _auth_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not _check_auth(auth.username, auth.password):
-            return Response(
-                "Admin access requires authentication.",
-                401,
-                {"WWW-Authenticate": 'Basic realm="DocMind Admin"'},
-            )
-        return f(*args, **kwargs)
-    return decorated
 
 
 @admin_app.before_request
@@ -149,20 +265,21 @@ def _initialize_db_startup() -> None:
     try:
         get_db().command("ping", maxTimeMS=2000)
         ensure_indexes()
-        logger.info(" MongoDB ready (admin)")
-    except Exception as _e:
-        logger.warning(f"  MongoDB unavailable at startup: {_e}")
+        logger.info("  MongoDB ready (admin)")
+    except Exception as exc:
+        logger.warning(f"  MongoDB unavailable at startup: {exc}")
 
 threading.Thread(target=_initialize_db_startup, daemon=True).start()
 
 logger.info("  ADMIN PANEL STARTED")
-logger.info(f"Timestamp    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-logger.info(f"URL          : http://localhost:5001/admin")
-logger.info(f"Upload folder: {os.path.abspath(Config.UPLOAD_FOLDER)}")
-logger.info(f"Vector store : {os.path.abspath(Config.QDRANT_PATH)}")
-logger.info(f"MongoDB DB   : {Config.MONGO_DB_NAME}")
+logger.info(f"  Timestamp    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+logger.info(f"  URL          : http://localhost:5001/admin")
+logger.info(f"  Upload folder: {os.path.abspath(Config.UPLOAD_FOLDER)}")
+logger.info(f"  Vector store : {os.path.abspath(Config.QDRANT_PATH)}")
+logger.info(f"  MongoDB DB   : {Config.MONGO_DB_NAME}")
 logger.info(
-    f"LangSmith tracing: {' ENABLED — project=' + Config.LANGCHAIN_PROJECT if Config.LANGCHAIN_TRACING_V2 else '⏸  DISABLED'}"
+    f"  LangSmith    : "
+    f"{'ENABLED — project=' + Config.LANGCHAIN_PROJECT if Config.LANGCHAIN_TRACING_V2 else 'DISABLED'}"
 )
 
 
@@ -174,7 +291,7 @@ def _allowed_file(filename: str) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# UI Routes
+# UI Route
 # ════════════════════════════════════════════════════════════════════════════
 
 @admin_app.route("/admin/")
@@ -189,23 +306,100 @@ def admin_home():
 
 @admin_app.route("/admin/job/<job_id>", methods=["GET"])
 def admin_job_status(job_id):
-    """Poll the status of a background ingestion job."""
+    """Poll the status of a single background ingestion job."""
     job = _get_job(job_id)
     if job is None:
         return jsonify({"status": "error", "message": "Job not found."}), 404
     return jsonify(job)
 
 
+@admin_app.route("/admin/queue", methods=["GET"])
+def admin_queue_status():
+    """Return the full ordered queue snapshot for the queue panel UI."""
+    return jsonify({
+        "jobs":    _get_queue_snapshot(),
+        "pending": _work_queue.qsize(),
+    })
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # DOCUMENT MANAGEMENT
 # ════════════════════════════════════════════════════════════════════════════
 
+@admin_app.route("/admin/load-documents", methods=["POST"])
+def admin_load_documents():
+    """
+    Accept 1–N file uploads in a single request.
+
+    Each file is saved to uploads/ immediately (synchronous, fast) and then
+    a job is queued for the heavy OCR + embedding work.  The endpoint returns
+    202 with a list of job_ids the browser polls individually.
+
+    FormData field: "files" (multiple) — standard multipart/form-data.
+    """
+    try:
+        files = request.files.getlist("files")
+        if not files or all(f.filename == "" for f in files):
+            return jsonify({"status": "error", "message": "No files received."}), 400
+
+        accepted = []
+        rejected = []
+
+        for file in files:
+            if not file.filename:
+                continue
+
+            filename = secure_filename(file.filename)
+
+            if not _allowed_file(filename):
+                exts = ", ".join(sorted(Config.ALLOWED_EXTENSIONS)).upper()
+                rejected.append({
+                    "filename": filename,
+                    "reason":   f"Unsupported file type. Supported: {exts}",
+                })
+                continue
+
+            save_path = os.path.join(admin_app.config["UPLOAD_FOLDER"], filename)
+            try:
+                file.save(save_path)
+                logger.info(f"  Saved upload: {filename}")
+            except OSError as save_err:
+                rejected.append({
+                    "filename": filename,
+                    "reason":   f"Could not save file: {save_err}",
+                })
+                continue
+
+            job_id = _enqueue_document(save_path, filename)
+            accepted.append({"filename": filename, "job_id": job_id})
+
+        if not accepted and rejected:
+            return jsonify({
+                "status":   "error",
+                "message":  "All files were rejected.",
+                "rejected": rejected,
+            }), 400
+
+        return jsonify({
+            "status":   "accepted",
+            "accepted": accepted,
+            "rejected": rejected,
+            "message":  (
+                f"{len(accepted)} file(s) queued for processing"
+                + (f", {len(rejected)} rejected" if rejected else "")
+                + "."
+            ),
+        }), 202
+
+    except Exception as exc:
+        logger.error(f"  /admin/load-documents error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+# Keep old single-file endpoint for backward compatibility
 @admin_app.route("/admin/load-document", methods=["POST"])
 def admin_load_document():
-    """
-    Accept a file upload, save it, then kick off a background ingestion job.
-    Returns 202 immediately with a job_id the browser can poll.
-    """
+    """Legacy single-file endpoint — delegates to load-documents."""
     try:
         if "file" not in request.files:
             return jsonify({"status": "error", "message": "No file in request."}), 400
@@ -219,49 +413,24 @@ def admin_load_document():
             exts = ", ".join(sorted(Config.ALLOWED_EXTENSIONS)).upper()
             return jsonify({
                 "status":  "error",
-                "message": f"Unsupported file type. Supported formats: {exts}"
+                "message": f"Unsupported file type. Supported formats: {exts}",
             }), 400
 
         save_path = os.path.join(admin_app.config["UPLOAD_FOLDER"], filename)
         file.save(save_path)
-        logger.info(f" Admin uploaded: {filename}")
+        logger.info(f"  Admin uploaded: {filename}")
 
-        job_id = _new_job()
-
-        def _run():
-            try:
-                if Config.LANGCHAIN_TRACING_V2:
-                    from langsmith import trace as ls_trace
-                    with ls_trace(
-                        name=f"admin_ingest:{filename}",
-                        run_type="chain",
-                        project_name=Config.LANGCHAIN_PROJECT,
-                        tags=["admin", "ingestion", "docmind"],
-                        metadata={"filename": filename, "source": "admin_panel"},
-                    ):
-                        message = process_document(save_path)
-                else:
-                    message = process_document(save_path)
-                _finish_job(job_id, message)
-            except Exception as exc:
-                _fail_job(job_id, str(exc))
-
-        threading.Thread(target=_run, daemon=True, name=f"ingest-{filename}").start()
-
+        job_id = _enqueue_document(save_path, filename)
         return jsonify({"status": "accepted", "job_id": job_id}), 202
 
-    except Exception as e:
-        logger.error(f" Admin upload error: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  Admin upload error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/load-url", methods=["POST"])
 def admin_load_url():
-    """
-    Accept a URL, validate it, then kick off a background ingestion job.
-    Returns 202 immediately with a job_id the browser can poll.
-    Heavy work (download + OCR + embed) happens in a background thread.
-    """
+    """Accept a URL and enqueue an ingestion job."""
     try:
         data = request.get_json()
         if not data or not data.get("url"):
@@ -271,38 +440,16 @@ def admin_load_url():
         if not (url.startswith("http://") or url.startswith("https://")):
             return jsonify({
                 "status":  "error",
-                "message": "Invalid URL. Must start with http:// or https://"
+                "message": "Invalid URL. Must start with http:// or https://",
             }), 400
 
-        logger.info(f" Admin URL ingestion requested: {url}")
-
-        job_id = _new_job()
-
-        def _run():
-            try:
-                if Config.LANGCHAIN_TRACING_V2:
-                    from langsmith import trace as ls_trace
-                    with ls_trace(
-                        name=f"admin_ingest_url:{url}",
-                        run_type="chain",
-                        project_name=Config.LANGCHAIN_PROJECT,
-                        tags=["admin", "ingestion", "url", "docmind"],
-                        metadata={"url": url, "source": "admin_panel"},
-                    ):
-                        message = load_url(url)
-                else:
-                    message = load_url(url)
-                _finish_job(job_id, message)
-            except Exception as exc:
-                _fail_job(job_id, str(exc))
-
-        threading.Thread(target=_run, daemon=True, name=f"ingest-url").start()
-
+        logger.info(f"  Admin URL ingestion requested: {url}")
+        job_id = _enqueue_url(url)
         return jsonify({"status": "accepted", "job_id": job_id}), 202
 
-    except Exception as e:
-        logger.error(f" Admin URL ingestion error: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  Admin URL ingestion error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/documents", methods=["GET"])
@@ -310,9 +457,9 @@ def admin_documents():
     try:
         docs = get_all_documents()
         return jsonify({"status": "success", "documents": docs, "total": len(docs)})
-    except Exception as e:
-        logger.error(f" Error fetching documents: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  Error fetching documents: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/delete-document", methods=["POST"])
@@ -335,20 +482,16 @@ def admin_delete_document():
         if not matching:
             return jsonify({
                 "status":  "error",
-                "message": f"'{filename}' not found in knowledge base."
+                "message": f"'{filename}' not found in knowledge base.",
             }), 404
 
         record    = matching[0]
         file_path = record.get("path", "")
 
-        # ── Step 1: Try to delete the file FIRST (before touching vectors/registry)
-        # If the file is locked by Windows (e.g. open in Excel/PDF reader), fail
-        # immediately with a clear message — nothing has been changed yet.
-        file_deleted = False
+        # ── Step 1: Delete physical file first ───────────────────────────
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-                file_deleted = True
                 logger.info(f"  Deleted file from disk: {file_path}")
             except PermissionError:
                 return jsonify({
@@ -356,75 +499,72 @@ def admin_delete_document():
                     "message": (
                         f"'{filename}' is currently open in another application. "
                         "Please close the file and try again."
-                    )
+                    ),
                 }), 409
-            except OSError as e:
+            except OSError as exc:
                 return jsonify({
                     "status":  "error",
-                    "message": f"Could not delete file: {e}"
+                    "message": f"Could not delete file: {exc}",
                 }), 500
 
-        # ── Step 2: Delete vectors from Qdrant (blue/green atomic swap)
-        # File is already gone from disk — now clean up vectors.
+        # ── Step 2: Delete vectors (blue/green pipeline) ─────────────────
         try:
             deleted = delete_document_chunks(filename)
             logger.info(f"  Removed {deleted} vector(s) for '{filename}' from Qdrant")
         except Exception as vec_err:
-            # Vectors failed — file is already deleted from disk.
-            # Log it but still clean registry so UI stays consistent.
-            logger.error(f"  Vector delete failed for '{filename}': {vec_err} — cleaning registry anyway")
+            logger.error(
+                f"  Vector delete failed for '{filename}': {vec_err} "
+                "— cleaning registry anyway"
+            )
 
-        # ── Step 3: Remove from registry (only after vectors are handled)
+        # ── Step 3: Remove from registry (atomic write) ──────────────────
+        from utils.embeddings import _save_registry
         remaining = [r for r in records if r.get("filename") != filename]
-        with open(registry_path, "w", encoding="utf-8") as f:
-            json.dump(remaining, f, indent=2, ensure_ascii=False)
+        _save_registry(remaining)
 
         logger.info(f"  '{filename}' fully removed from knowledge base")
         return jsonify({
             "status":    "success",
             "message":   f"'{filename}' removed from knowledge base.",
-            "documents": get_all_documents()
+            "documents": get_all_documents(),
         })
 
-    except Exception as e:
-        logger.error(f" Error deleting document: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  Error deleting document: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ANALYTICS API  — all prefixed /admin/api/
+# ANALYTICS API
 # ════════════════════════════════════════════════════════════════════════════
 
 @admin_app.route("/admin/api/stats", methods=["GET"])
 def api_stats():
     try:
-        chat   = get_chat_stats()
-        docs   = get_all_documents()
+        chat         = get_chat_stats()
+        docs         = get_all_documents()
         total_chunks = sum(d.get("chunks", 0) for d in docs)
-
-        visitors_col = get_db()["visitors"]
-        bookings_col = get_db()["bookings"]
-        users_col    = get_db()["users"]
+        db           = get_db()
 
         return jsonify({
             "status": "success",
             "stats": {
-                "total_chats":       chat["total"],
-                "rag_chats":         chat["rag"],
-                "faq_chats":         chat["faq"],
-                "smalltalk_chats":   chat["smalltalk"],
-                "unique_visitors":   chat["unique_visitors"],
-                "unique_users":      chat["unique_users"],
-                "total_documents":   len(docs),
-                "total_chunks":      total_chunks,
-                "total_visitors":    visitors_col.count_documents({}),
-                "total_bookings":    bookings_col.count_documents({}),
-                "total_users":       users_col.count_documents({}),
-            }
+                "total_chats":     chat["total"],
+                "rag_chats":       chat["rag"],
+                "faq_chats":       chat["faq"],
+                "smalltalk_chats": chat["smalltalk"],
+                "unique_visitors": chat["unique_visitors"],
+                "unique_users":    chat["unique_users"],
+                "total_documents": len(docs),
+                "total_chunks":    total_chunks,
+                "total_visitors":  db["visitors"].count_documents({}),
+                "total_bookings":  db["bookings"].count_documents({}),
+                "total_users":     db["users"].count_documents({}),
+            },
         })
-    except Exception as e:
-        logger.error(f" /admin/api/stats error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  /admin/api/stats error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/api/chat-logs", methods=["GET"])
@@ -436,14 +576,13 @@ def api_chat_logs():
         logs  = get_recent_chat_logs(limit=limit, skip=skip)
         total = get_db()["chat_logs"].count_documents({})
 
-        visitor_ids = list({log.get("visitor_id", "") for log in logs if log.get("visitor_id")})
+        visitor_ids   = list({log.get("visitor_id", "") for log in logs if log.get("visitor_id")})
         visitor_names = {}
         if visitor_ids:
-            visitors = get_db()["visitors"].find(
+            for v in get_db()["visitors"].find(
                 {"visitor_id": {"$in": visitor_ids}},
-                {"visitor_id": 1, "name": 1, "_id": 0}
-            )
-            for v in visitors:
+                {"visitor_id": 1, "name": 1, "_id": 0},
+            ):
                 if v.get("name"):
                     visitor_names[v["visitor_id"]] = v["name"]
 
@@ -459,57 +598,44 @@ def api_chat_logs():
             "total":  total,
             "logs":   logs,
         })
-    except Exception as e:
-        logger.error(f" /admin/api/chat-logs error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        logger.error(f"  /admin/api/chat-logs error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/api/visitors", methods=["GET"])
 def api_visitors():
     try:
-        limit    = int(request.args.get("limit", 100))
-        limit    = min(limit, 500)
+        limit    = min(int(request.args.get("limit", 100)), 500)
         visitors = get_all_visitors(limit=limit)
-        return jsonify({
-            "status":   "success",
-            "total":    len(visitors),
-            "visitors": visitors,
-        })
-    except Exception as e:
-        logger.error(f" /admin/api/visitors error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "success", "total": len(visitors), "visitors": visitors})
+    except Exception as exc:
+        logger.error(f"  /admin/api/visitors error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/api/bookings", methods=["GET"])
 def api_bookings():
     try:
         bookings = get_all_bookings()
-        return jsonify({
-            "status":   "success",
-            "total":    len(bookings),
-            "bookings": bookings,
-        })
-    except Exception as e:
-        logger.error(f" /admin/api/bookings error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "success", "total": len(bookings), "bookings": bookings})
+    except Exception as exc:
+        logger.error(f"  /admin/api/bookings error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 @admin_app.route("/admin/api/users", methods=["GET"])
 def api_users():
     try:
         users = get_all_users()
-        return jsonify({
-            "status": "success",
-            "total":  len(users),
-            "users":  users,
-        })
-    except Exception as e:
-        logger.error(f" /admin/api/users error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "success", "total": len(users), "users": users})
+    except Exception as exc:
+        logger.error(f"  /admin/api/users error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STT PROVIDER — read / switch
+# STT PROVIDER
 # ════════════════════════════════════════════════════════════════════════════
 
 @admin_app.route("/admin/stt/provider", methods=["GET"])
@@ -526,11 +652,6 @@ def admin_stt_get():
 
 @admin_app.route("/admin/stt/provider", methods=["POST"])
 def admin_stt_set():
-    """
-    Switch STT provider.
-    Idle-safe: writes stt_provider.json.
-    New provider takes effect on the next mic session — no active session interrupted.
-    """
     from utils.transcribe import set_active_provider, VALID_PROVIDERS
     data     = request.get_json() or {}
     provider = (data.get("provider") or "").strip().lower()
@@ -545,15 +666,18 @@ def admin_stt_set():
 
     try:
         set_active_provider(provider)
-        logger.info(f"[STT] Admin switched provider → {provider}")
+        logger.info(f"  [STT] Admin switched provider → {provider}")
         return jsonify({
             "status":   "success",
             "provider": provider,
             "label":    VALID_PROVIDERS[provider],
-            "message":  f"STT provider switched to {VALID_PROVIDERS[provider]}. Takes effect on next mic session.",
+            "message":  (
+                f"STT provider switched to {VALID_PROVIDERS[provider]}. "
+                "Takes effect on next mic session."
+            ),
         })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -569,13 +693,13 @@ def admin_health():
     except Exception:
         pass
     return jsonify({
-        "status":  "running",
-        "panel":   "admin",
-        "mongodb": "connected" if mongo_ok else "unavailable",
+        "status":        "running",
+        "panel":         "admin",
+        "mongodb":       "connected" if mongo_ok else "unavailable",
+        "queue_pending": _work_queue.qsize(),
     })
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     admin_app.run(host="0.0.0.0", port=5001, debug=False, use_reloader=False)

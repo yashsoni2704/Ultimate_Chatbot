@@ -3,11 +3,6 @@ utils/embeddings.py
 ~~~~~~~~~~~~~~~~~~~
 Blue/Green vector database strategy using Qdrant HTTP server mode.
 
-Qdrant runs as a standalone server (qdrant.exe) on localhost:6333.
-All Python code connects via HTTP — no file locks, no conflicts.
-Multiple processes (app.py, admin_app.py) and multiple threads can
-all connect simultaneously without any locking issues.
-
 Slot layout:
     docmind_blue   ← one Qdrant collection
     docmind_green  ← other Qdrant collection
@@ -16,19 +11,31 @@ active_slot.json (inside QDRANT_PATH):
     {"active": "blue"} or {"active": "green"}
 
 Flow for every add/delete:
-    1. Clone active → standby  (all existing data preserved)
-    2. Modify standby           (add or delete)
-    3. Switch pointer           (atomic JSON write, ~1ms)
-    Users query active throughout — zero interruption.
+    1. Acquire cross-process file lock  (portalocker — works across app.py + admin_app.py)
+    2. Clone active → standby           (users query active throughout, zero interruption)
+    3. Modify standby                   (add or delete)
+    4. Atomic pointer switch            (~1 ms JSON write via tmp + os.replace)
+    5. Release lock
+
+Rollback on any failure in steps 2-4:
+    • The active slot pointer is restored to its original value
+    • The dirty standby collection is dropped from Qdrant
+    • The caller receives a clean exception — nothing is left half-written
+
+Registry writes are always atomic (write to .tmp → os.replace) so a crash
+mid-write can never corrupt registry.json.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
 import time
+import threading
 from datetime import datetime
+from pathlib import Path
+
+import portalocker          # cross-process file locking (already in requirements.txt)
 
 from config import Config
 from utils.logger import get_logger
@@ -43,8 +50,66 @@ GREEN = "green"
 REGISTRY_FILE    = os.path.join(Config.QDRANT_PATH, "registry.json")
 ACTIVE_SLOT_FILE = os.path.join(Config.QDRANT_PATH, Config.ACTIVE_SLOT_FILE)
 
-# ── Serialise writes — only one add/delete pipeline at a time ────────────────
-_write_lock = threading.Lock()
+# Cross-process lock file — one file covers both app.py and admin_app.py
+_LOCK_FILE = os.path.join(Config.QDRANT_PATH, "write.lock")
+
+# In-process threading lock — guards against concurrent threads within one process
+# (the portalocker handles inter-process; this handles intra-process)
+_thread_lock = threading.Lock()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Cross-process + cross-thread write lock
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _WriteLock:
+    """
+    Combines threading.Lock (intra-process) with portalocker (inter-process).
+    Use as a context manager:
+
+        with _WriteLock():
+            ...  # only one thread/process inside here at a time
+    """
+    TIMEOUT = 600   # seconds — longest expected embedding job
+
+    def __enter__(self):
+        os.makedirs(Config.QDRANT_PATH, exist_ok=True)
+        self._thread_acquired = _thread_lock.acquire(timeout=self.TIMEOUT)
+        if not self._thread_acquired:
+            raise TimeoutError("Could not acquire intra-process write lock after 10 min.")
+        try:
+            self._fh = open(_LOCK_FILE, "w")
+            portalocker.lock(self._fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            # If lock is held by another process, poll until timeout
+            deadline = time.monotonic() + self.TIMEOUT
+            while True:
+                try:
+                    portalocker.lock(self._fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                    break
+                except portalocker.LockException:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(
+                            "Could not acquire cross-process write lock after 10 min. "
+                            "Another ingestion job may be stuck."
+                        )
+                    time.sleep(0.5)
+        except Exception:
+            _thread_lock.release()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        try:
+            portalocker.unlock(self._fh)
+            self._fh.close()
+        except Exception:
+            pass
+        finally:
+            if self._thread_acquired:
+                _thread_lock.release()
+
+
+_write_lock = _WriteLock()   # singleton — used everywhere
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -52,9 +117,6 @@ _write_lock = threading.Lock()
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _get_qdrant_client():
-    """Return a QdrantClient connected to the Qdrant HTTP server.
-    Multiple callers get independent connections — no file lock, no conflict.
-    """
     from qdrant_client import QdrantClient
     return QdrantClient(
         host    = Config.QDRANT_HOST,
@@ -64,7 +126,7 @@ def _get_qdrant_client():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Registry helpers
+# Registry helpers — all writes are atomic (tmp → replace)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _load_registry() -> list:
@@ -79,9 +141,13 @@ def _load_registry() -> list:
 
 
 def _save_registry(records: list) -> None:
+    """Atomic write: serialise to a .tmp file then os.replace() it into place.
+    If the process dies mid-write the old registry.json is left intact."""
     os.makedirs(Config.QDRANT_PATH, exist_ok=True)
-    with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+    tmp = REGISTRY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, REGISTRY_FILE)
 
 
 def _is_already_ingested(filename: str) -> bool:
@@ -132,6 +198,7 @@ def _read_active_slot() -> str:
 
 
 def _write_active_slot(slot: str) -> None:
+    """Atomic write via tmp + os.replace — crash-safe."""
     os.makedirs(Config.QDRANT_PATH, exist_ok=True)
     tmp = ACTIVE_SLOT_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -190,24 +257,20 @@ def _clone_collection(client, src: str, dst: str) -> int:
     existing = {c.name for c in client.get_collections().collections}
 
     if src not in existing:
-        # Active is empty (first ever upload) — just delete dst if it exists
         if dst in existing:
             client.delete_collection(dst)
         logger.info(f"📋 Source '{src}' is empty — standby will be created fresh")
         return 0
 
-    # Read vector config from source
     src_info    = client.get_collection(src)
     vectors_cfg = src_info.config.params.vectors
     if hasattr(vectors_cfg, "size"):
-        vector_size = vectors_cfg.size
+        pass  # used directly below
     elif isinstance(vectors_cfg, dict):
-        first       = next(iter(vectors_cfg.values()))
-        vector_size = first.size
+        pass
     else:
-        vector_size = 1024
+        vectors_cfg = VectorParams(size=1024, distance=Distance.COSINE)
 
-    # Recreate dst with same config
     if dst in existing:
         client.delete_collection(dst)
     client.create_collection(
@@ -215,11 +278,9 @@ def _clone_collection(client, src: str, dst: str) -> int:
         vectors_config  = vectors_cfg,
     )
 
-    # Stream all points src → dst in batches of 256
-    BATCH = 256
+    BATCH  = 256
     offset = None
     total  = 0
-
     while True:
         results, next_offset = client.scroll(
             collection_name = src,
@@ -242,8 +303,19 @@ def _clone_collection(client, src: str, dst: str) -> int:
     return total
 
 
+def _drop_collection_safe(client, name: str) -> None:
+    """Drop a collection, ignoring errors (used in rollback)."""
+    try:
+        existing = {c.name for c in client.get_collections().collections}
+        if name in existing:
+            client.delete_collection(name)
+            logger.info(f"🧹 Rolled back: dropped '{name}'")
+    except Exception as exc:
+        logger.warning(f"  Rollback drop failed for '{name}': {exc}")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# Public: delete chunks
+# Public: delete chunks  — with rollback
 # ═════════════════════════════════════════════════════════════════════════════
 
 def delete_document_chunks(filename: str) -> int:
@@ -258,59 +330,72 @@ def delete_document_chunks(filename: str) -> int:
 
         logger.info(f"🗑️  Delete: active={active.upper()} standby={standby.upper()}")
 
-        # Step 1 — clone
+        # ── Step 1 — clone active → standby ──────────────────────────────
         logger.info("Step 1/3 — Cloning active → standby …")
-        _clone_collection(client, src=active_col, dst=standby_col)
+        try:
+            _clone_collection(client, src=active_col, dst=standby_col)
+        except Exception as exc:
+            logger.error(f"  Clone failed during delete: {exc} — aborting, nothing changed")
+            raise RuntimeError(f"Delete aborted (clone failed): {exc}") from exc
 
-        # Step 2 — delete from standby
+        # ── Step 2 — delete from standby ─────────────────────────────────
         logger.info(f"Step 2/3 — Deleting '{filename}' from standby …")
+        try:
+            existing_cols = {c.name for c in client.get_collections().collections}
+            if standby_col not in existing_cols:
+                from qdrant_client.models import VectorParams, Distance
+                client.create_collection(
+                    collection_name = standby_col,
+                    vectors_config  = VectorParams(size=1024, distance=Distance.COSINE),
+                )
+                logger.info(f"   Created empty standby '{standby_col}' (nothing to delete)")
+                # Nothing to delete — just switch
+                _write_active_slot(standby)
+                logger.info(f"✅ Delete complete (no vectors) — new active: {standby.upper()}")
+                return 0
 
-        # If standby doesn't exist yet (source was empty → clone skipped creation),
-        # create it now so the delete/count calls don't 404.
-        existing_cols = {c.name for c in client.get_collections().collections}
-        if standby_col not in existing_cols:
-            from qdrant_client.models import Distance, VectorParams
-            # We don't know vector size yet (no vectors exist), so use a placeholder.
-            # The collection will be properly recreated on next upload anyway.
-            client.create_collection(
-                collection_name = standby_col,
-                vectors_config  = VectorParams(size=1024, distance=Distance.COSINE),
-            )
-            logger.info(f"   Created empty standby '{standby_col}' (nothing to delete)")
-            # Switch active slot and exit cleanly — nothing to delete
-            logger.info("Step 3/3 — Switching …")
-            _write_active_slot(standby)
-            logger.info(f"✅ Delete complete (document had no vectors) — new active: {standby.upper()}")
-            return 0
-        delete_filter = Filter(must=[
-            FieldCondition(key="metadata.source", match=MatchValue(value=filename))
-        ])
-        before = client.count(collection_name=standby_col,
-                              count_filter=delete_filter, exact=True).count
-        if before == 0:
-            records  = _load_registry()
-            matching = [r for r in records if r.get("filename") == filename]
-            if matching:
-                abs_path = matching[0].get("path", "")
-                delete_filter = Filter(must=[
-                    FieldCondition(key="metadata.source",
-                                   match=MatchValue(value=abs_path))
-                ])
-                before = client.count(collection_name=standby_col,
-                                      count_filter=delete_filter, exact=True).count
+            delete_filter = Filter(must=[
+                FieldCondition(key="metadata.source", match=MatchValue(value=filename))
+            ])
+            before = client.count(collection_name=standby_col,
+                                  count_filter=delete_filter, exact=True).count
+            if before == 0:
+                records  = _load_registry()
+                matching = [r for r in records if r.get("filename") == filename]
+                if matching:
+                    abs_path = matching[0].get("path", "")
+                    delete_filter = Filter(must=[
+                        FieldCondition(key="metadata.source",
+                                       match=MatchValue(value=abs_path))
+                    ])
+                    before = client.count(collection_name=standby_col,
+                                          count_filter=delete_filter, exact=True).count
 
-        client.delete(collection_name=standby_col, points_selector=delete_filter)
-        logger.info(f"   Removed {before} vector(s) for '{filename}'")
+            client.delete(collection_name=standby_col, points_selector=delete_filter)
+            logger.info(f"   Removed {before} vector(s) for '{filename}'")
 
-        # Step 3 — switch
+        except Exception as exc:
+            logger.error(f"  Delete from standby failed: {exc} — rolling back")
+            _drop_collection_safe(client, standby_col)
+            # Active slot is unchanged — no switch happened yet — nothing broken
+            raise RuntimeError(f"Delete failed (standby modify): {exc}") from exc
+
+        # ── Step 3 — switch pointer ───────────────────────────────────────
         logger.info("Step 3/3 — Switching …")
-        _write_active_slot(standby)
+        try:
+            _write_active_slot(standby)
+        except Exception as exc:
+            # Pointer write failed — rollback standby, keep original active
+            logger.error(f"  Slot switch failed: {exc} — rolling back")
+            _drop_collection_safe(client, standby_col)
+            raise RuntimeError(f"Delete failed (slot switch): {exc}") from exc
+
         logger.info(f"✅ Delete complete — new active: {standby.upper()}")
         return before
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# EmbeddingManager
+# EmbeddingManager — with rollback on create_vector_store failure
 # ═════════════════════════════════════════════════════════════════════════════
 
 class EmbeddingManager:
@@ -322,11 +407,7 @@ class EmbeddingManager:
         logger.info("✅ Embedding model initialized")
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """
-        Call Ollama /api/embed directly via requests.
-        Thread-safe, no LangChain overhead, no subprocess.  Ollama can return
-        a transient timeout while loading a cold embedding model, so retry it.
-        """
+        """Call Ollama /api/embed directly. Retries on transient failures."""
         import requests as _req
         attempts = max(1, Config.EMBEDDING_RETRIES + 1)
         data = None
@@ -347,27 +428,45 @@ class EmbeddingManager:
                         f"Ollama embedding failed after {attempts} attempt(s): {exc}"
                     ) from exc
                 logger.warning(
-                    "Ollama embedding attempt %d/%d failed (%s); retrying in 5 seconds...",
+                    "Ollama embedding attempt %d/%d failed (%s); retrying in 5 s…",
                     attempt, attempts, exc,
                 )
                 time.sleep(5)
 
         assert data is not None
-        # Ollama returns {"embeddings": [[...]]} or {"embedding": [...]} depending on version
         if "embeddings" in data:
             return data["embeddings"]
-        # Single text fallback
         return [data["embedding"]]
 
     def create_vector_store(self, chunks, source_path: str = ""):
-        """Add chunks via blue/green pipeline. No file locks — HTTP only."""
-        from langchain_qdrant import QdrantVectorStore
+        """
+        Add chunks via the blue/green pipeline.
+
+        Rollback guarantee
+        ------------------
+        If any step after clone fails (embed crash, slot write error, etc.):
+          1. The dirty standby collection is dropped from Qdrant
+          2. The active slot pointer is left at its original value
+          3. The uploaded physical file is NOT removed here — the caller owns cleanup
+          4. A RuntimeError is raised so the job is marked as failed
+        """
+        from qdrant_client.models import Distance, VectorParams, PointStruct
+        import uuid as _uuid
 
         filename = (source_path if source_path.startswith(("http://", "https://"))
                     else os.path.basename(source_path)) if source_path else ""
 
+        # ── Duplicate check (outside lock — fast path) ────────────────────
         if filename and _is_already_ingested(filename):
             logger.warning(f"⚠️  '{filename}' already in knowledge base — skipping.")
+            # Remove the duplicate file from disk so uploads/ does not bloat
+            if source_path and not source_path.startswith(("http://", "https://")):
+                if os.path.exists(source_path):
+                    try:
+                        os.remove(source_path)
+                        logger.info(f"🧹 Removed duplicate file from disk: {source_path}")
+                    except OSError as rm_err:
+                        logger.warning(f"  Could not remove duplicate file: {rm_err}")
             return None
 
         if not chunks:
@@ -386,70 +485,90 @@ class EmbeddingManager:
             logger.info(f"\n📥 Add: active={active.upper()} standby={standby.upper()}")
             logger.info(f"   File: {filename or 'unknown'}  Chunks: {len(chunks)}")
 
-            # Step 1 — clone active → standby
+            # ── Step 1 — clone active → standby ──────────────────────────
             logger.info("Step 1/3 — Cloning active → standby …")
-            _clone_collection(client, src=active_col, dst=standby_col)
+            try:
+                _clone_collection(client, src=active_col, dst=standby_col)
+            except Exception as exc:
+                logger.error(f"  Clone failed: {exc} — aborting, nothing changed")
+                raise RuntimeError(f"Ingestion aborted (clone failed): {exc}") from exc
 
-            # Step 2 — embed into standby in batches via direct Qdrant HTTP upsert.
-            # We call Ollama for embeddings directly and upsert via qdrant_client
-            # to avoid QdrantVectorStore loading the model into a second process.
+            # ── Step 2 — embed chunks into standby ───────────────────────
             logger.info("Step 2/3 — Embedding chunks into standby …")
+            try:
+                BATCH_SIZE    = 8
+                total_done    = 0
+                total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
 
-            from qdrant_client.models import Distance, VectorParams, PointStruct
-            import uuid as _uuid
+                sample_vecs = self._embed_texts([chunks[0].page_content])
+                vector_size = len(sample_vecs[0])
 
-            BATCH_SIZE    = 8
-            total_done    = 0
-            total_batches = (len(chunks) + BATCH_SIZE - 1) // BATCH_SIZE
-
-            # Get vector size by embedding one sample text directly via Ollama HTTP
-            sample_vecs = self._embed_texts([chunks[0].page_content])
-            vector_size = len(sample_vecs[0])
-
-            existing_cols = {c.name for c in client.get_collections().collections}
-            if standby_col not in existing_cols:
-                client.create_collection(
-                    collection_name = standby_col,
-                    vectors_config  = VectorParams(size=vector_size, distance=Distance.COSINE),
-                )
-                logger.info(f"   Created collection '{standby_col}' (dim={vector_size})")
-
-            for batch_num, start in enumerate(range(0, len(chunks), BATCH_SIZE), start=1):
-                batch   = chunks[start : start + BATCH_SIZE]
-                texts   = [c.page_content for c in batch]
-                vectors = self._embed_texts(texts)
-
-                points = [
-                    PointStruct(
-                        id      = _uuid.uuid4().hex,
-                        vector  = vec,
-                        payload = {
-                            "page_content": chunk.page_content,
-                            "metadata":     chunk.metadata,
-                        },
+                existing_cols = {c.name for c in client.get_collections().collections}
+                if standby_col not in existing_cols:
+                    client.create_collection(
+                        collection_name = standby_col,
+                        vectors_config  = VectorParams(size=vector_size, distance=Distance.COSINE),
                     )
-                    for chunk, vec in zip(batch, vectors)
-                ]
-                client.upsert(collection_name=standby_col, points=points)
-                total_done += len(batch)
-                logger.info(f"   Batch {batch_num}/{total_batches}: {len(batch)} chunks  ({total_done}/{len(chunks)} total)")
+                    logger.info(f"   Created collection '{standby_col}' (dim={vector_size})")
 
-            logger.info(f"   ✅ {total_done} vectors embedded into {standby_col}")
+                for batch_num, start in enumerate(range(0, len(chunks), BATCH_SIZE), start=1):
+                    batch   = chunks[start : start + BATCH_SIZE]
+                    texts   = [c.page_content for c in batch]
+                    vectors = self._embed_texts(texts)
 
-            # Step 3 — switch
+                    points = [
+                        PointStruct(
+                            id      = _uuid.uuid4().hex,
+                            vector  = vec,
+                            payload = {
+                                "page_content": chunk.page_content,
+                                "metadata":     chunk.metadata,
+                            },
+                        )
+                        for chunk, vec in zip(batch, vectors)
+                    ]
+                    client.upsert(collection_name=standby_col, points=points)
+                    total_done += len(batch)
+                    logger.info(
+                        f"   Batch {batch_num}/{total_batches}: "
+                        f"{len(batch)} chunks  ({total_done}/{len(chunks)} total)"
+                    )
+
+                logger.info(f"   ✅ {total_done} vectors embedded into {standby_col}")
+
+            except Exception as exc:
+                logger.error(f"  Embedding failed: {exc} — rolling back standby")
+                _drop_collection_safe(client, standby_col)
+                raise RuntimeError(f"Ingestion failed (embedding): {exc}") from exc
+
+            # ── Step 3 — switch pointer ───────────────────────────────────
             logger.info("Step 3/3 — Switching active slot …")
-            _write_active_slot(standby)
+            try:
+                _write_active_slot(standby)
+            except Exception as exc:
+                logger.error(f"  Slot switch failed: {exc} — rolling back")
+                _drop_collection_safe(client, standby_col)
+                raise RuntimeError(f"Ingestion failed (slot switch): {exc}") from exc
 
+            # ── Register document ─────────────────────────────────────────
             if filename:
-                _register_document(filename, source_path, len(chunks))
-                logger.info(f"   ✅ Registered '{filename}'")
+                try:
+                    _register_document(filename, source_path, len(chunks))
+                    logger.info(f"   ✅ Registered '{filename}'")
+                except Exception as reg_err:
+                    # Registry write failure is non-fatal — vectors are live.
+                    # Log it prominently so the admin notices.
+                    logger.error(
+                        f"  ⚠️  Registry write failed for '{filename}': {reg_err}. "
+                        "Vectors are live but the document won't appear in the KB table "
+                        "until the registry is repaired."
+                    )
 
             logger.info(f"✅ Add complete — new active: {standby.upper()}")
 
         return self.load_vector_store()
 
     def load_vector_store(self):
-        """Return QdrantVectorStore pointed at active slot via HTTP."""
         from langchain_qdrant import QdrantVectorStore
 
         active_col = get_active_collection_name()

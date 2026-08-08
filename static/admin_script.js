@@ -5,36 +5,32 @@
 const API = "";  // same origin
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
-const dropZone       = document.getElementById("dropZone");
-const fileInput      = document.getElementById("fileInput");
-const browseBtn      = document.getElementById("browseBtn");
-const filePreview    = document.getElementById("filePreview");
-const fileTypeIcon   = document.getElementById("fileTypeIcon");
-const previewName    = document.getElementById("previewName");
-const fileTypeBadge  = document.getElementById("fileTypeBadge");
-const previewSize    = document.getElementById("previewSize");
-const removeFileBtn  = document.getElementById("removeFileBtn");
-const uploadBtn      = document.getElementById("uploadBtn");
-const uploadBtnText  = document.getElementById("uploadBtnText");
-const progressWrap   = document.getElementById("progressWrap");
-const progressBar    = document.getElementById("progressBar");
-const progressLabel  = document.getElementById("progressLabel");
-const uploadStatus   = document.getElementById("uploadStatus");
-const refreshBtn     = document.getElementById("refreshBtn");
-const statTotal      = document.getElementById("statTotal");
-const statChunks     = document.getElementById("statChunks");
+const dropZone    = document.getElementById("dropZone");
+const fileInput   = document.getElementById("fileInput");
+const browseBtn   = document.getElementById("browseBtn");
+const uploadBtn   = document.getElementById("uploadBtn");
+const uploadBtnText = document.getElementById("uploadBtnText");
+const refreshBtn  = document.getElementById("refreshBtn");
+const statTotal   = document.getElementById("statTotal");
+const statChunks  = document.getElementById("statChunks");
 const deleteModal    = document.getElementById("deleteModal");
 const deleteFileName = document.getElementById("deleteFileName");
 const modalCancel    = document.getElementById("modalCancel");
 const modalConfirm   = document.getElementById("modalConfirm");
 
-let selectedFile  = null;
 let pendingDelete = null;
 
-// ── All ingested docs (split into files + urls) ──────────────────────────
-let _allDocs  = [];  // file documents
-let _allUrls  = [];  // url entries
-let _allItems = [];  // combined — used by unified table
+// ── Multi-file queue state ────────────────────────────────────────────────
+// selectedFiles : File[] currently staged in the drop zone
+// _queuedJobs   : { jobId, filename, status, message }[] — live job list
+let selectedFiles = [];
+let _queuedJobs   = [];
+let _queuePollTimer = null;
+
+// ── All ingested docs (unified table) ────────────────────────────────────
+let _allDocs  = [];
+let _allUrls  = [];
+let _allItems = [];
 let _adminKbLastCount = -1;
 
 
@@ -298,136 +294,289 @@ function clearUrlsSearch()  { clearKbSearch(); }
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  DRAG & DROP
+//  DRAG & DROP — multi-file
 // ════════════════════════════════════════════════════════════════════════════
 
 dropZone.addEventListener("dragover", (e) => {
     e.preventDefault();
     dropZone.classList.add("drag-active");
 });
-
 dropZone.addEventListener("dragleave", (e) => {
     if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove("drag-active");
 });
-
 dropZone.addEventListener("drop", (e) => {
     e.preventDefault();
     dropZone.classList.remove("drag-active");
-    if (e.dataTransfer.files.length > 0) handleFileSelected(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length > 0) handleFilesSelected(Array.from(e.dataTransfer.files));
+});
+browseBtn.addEventListener("click", (e) => { e.stopPropagation(); fileInput.click(); });
+dropZone.addEventListener("click",  () => fileInput.click());
+fileInput.addEventListener("change", (e) => {
+    if (e.target.files.length > 0) handleFilesSelected(Array.from(e.target.files));
 });
 
-browseBtn.addEventListener("click", (e) => { e.stopPropagation(); fileInput.click(); });
-dropZone.addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", (e) => { if (e.target.files.length > 0) handleFileSelected(e.target.files[0]); });
 
 // ════════════════════════════════════════════════════════════════════════════
-//  FILE SELECTION
+//  FILE SELECTION — multi-file staging list
 // ════════════════════════════════════════════════════════════════════════════
 
-function handleFileSelected(file) {
-    const ft = getFileType(file.name);
-    const allowedExts = ["pdf","docx","doc","xlsx","xls","pptx","ppt","csv","txt","rtf"];
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (!allowedExts.includes(ext)) {
-        showUploadStatus(`❌ Unsupported file type ".${ext}". Supported: ${allowedExts.join(", ").toUpperCase()}`, "error");
+const ALLOWED_EXTS = ["pdf","docx","doc","xlsx","xls","pptx","ppt","csv","txt","rtf"];
+
+function handleFilesSelected(files) {
+    const valid   = [];
+    const invalid = [];
+
+    files.forEach(f => {
+        const ext = f.name.split(".").pop().toLowerCase();
+        if (ALLOWED_EXTS.includes(ext)) valid.push(f);
+        else invalid.push(f.name);
+    });
+
+    if (invalid.length) {
+        // Non-blocking — warn but still accept valid files
+        console.warn("Unsupported files skipped:", invalid.join(", "));
+    }
+
+    // Merge with existing staged files (deduplicate by name)
+    const existingNames = new Set(selectedFiles.map(f => f.name));
+    valid.forEach(f => { if (!existingNames.has(f.name)) selectedFiles.push(f); });
+
+    renderStagedFiles();
+}
+
+function renderStagedFiles() {
+    const listEl  = document.getElementById("selectedFilesList");
+    const qPanel  = document.getElementById("uploadQueuePanel");
+
+    if (!selectedFiles.length) {
+        if (listEl) listEl.style.display = "none";
+        uploadBtn.disabled = true;
+        uploadBtnText.textContent = "Select files to upload";
         return;
     }
-    selectedFile = file;
-    hideUploadStatus();
-    fileTypeIcon.style.background  = ft.bg;
-    fileTypeIcon.style.color       = ft.color;
-    fileTypeIcon.style.border      = `1px solid ${ft.color}44`;
-    fileTypeIcon.textContent       = ft.icon;
-    previewName.textContent        = file.name;
-    fileTypeBadge.textContent      = ft.label;
-    fileTypeBadge.style.background = ft.bg;
-    fileTypeBadge.style.color      = ft.color;
-    fileTypeBadge.style.borderColor= ft.color + "44";
-    previewSize.textContent        = formatBytes(file.size);
-    filePreview.style.display      = "flex";
-    uploadBtn.disabled             = false;
-    uploadBtnText.textContent      = `Upload ${file.name}`;
+
+    if (listEl) {
+        listEl.style.display = "block";
+        listEl.innerHTML = selectedFiles.map((f, i) => {
+            const ft  = getFileType(f.name);
+            const ext = f.name.split(".").pop().toLowerCase();
+            return `
+            <div class="staged-file-row" data-idx="${i}">
+                <div class="staged-file-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div>
+                <div class="staged-file-info">
+                    <span class="staged-file-name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
+                    <span class="staged-file-size">${formatBytes(f.size)}</span>
+                </div>
+                <button class="staged-remove-btn" onclick="removeStagedFile(${i})" title="Remove">✕</button>
+            </div>`;
+        }).join("");
+    }
+
+    uploadBtn.disabled = false;
+    uploadBtnText.textContent = selectedFiles.length === 1
+        ? `Upload 1 file`
+        : `Upload ${selectedFiles.length} files`;
 }
 
-removeFileBtn.addEventListener("click", clearSelectedFile);
+function removeStagedFile(idx) {
+    selectedFiles.splice(idx, 1);
+    renderStagedFiles();
+}
 
-function clearSelectedFile() {
-    selectedFile              = null;
-    fileInput.value           = "";
-    filePreview.style.display = "none";
-    uploadBtn.disabled        = true;
-    uploadBtnText.textContent = "Select a file to upload";
-    hideUploadStatus();
+function clearStagedFiles() {
+    selectedFiles = [];
+    fileInput.value = "";
+    renderStagedFiles();
 }
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  UPLOAD
+//  UPLOAD — submit all staged files, show queue panel
 // ════════════════════════════════════════════════════════════════════════════
 
-uploadBtn.addEventListener("click", uploadFile);
+uploadBtn.addEventListener("click", uploadFiles);
 
-async function uploadFile() {
-    if (!selectedFile) return;
+async function uploadFiles() {
+    if (!selectedFiles.length) return;
+
+    const filesToUpload = [...selectedFiles];
+    clearStagedFiles();
+
     uploadBtn.disabled = true;
     uploadBtn.classList.add("loading");
     uploadBtnText.textContent = "Uploading…";
-    showProgress(0, "Uploading file…");
-    hideUploadStatus();
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-    try {
-        const response = await fetch(`${API}/admin/load-document`, { method: "POST", credentials: "include", body: formData });
-        const result = await response.json();
 
-        if (result.status === "accepted" && result.job_id) {
-            // Background job started — poll for completion
-            setProgress(5, "File uploaded — processing…");
-            await _pollJob(result.job_id, {
-                onProgress: (pct, label) => setProgress(pct, label),
-                onDone:     (msg) => {
-                    setProgress(100, "Done!");
-                    setTimeout(() => hideProgress(), 800);
-                    showUploadStatus(`✅ ${msg}`, "success");
-                    clearSelectedFile();
-                    loadKnowledgeBase();
-                },
-                onError: (msg) => {
-                    hideProgress();
-                    showUploadStatus(`❌ ${msg}`, "error");
-                    uploadBtn.disabled = false;
-                    uploadBtnText.textContent = `Upload ${selectedFile ? selectedFile.name : "file"}`;
-                },
+    const formData = new FormData();
+    filesToUpload.forEach(f => formData.append("files", f));
+
+    try {
+        const res  = await fetch(`${API}/admin/load-documents`, {
+            method: "POST",
+            credentials: "include",
+            body: formData,
+        });
+        const data = await res.json();
+
+        // Show the queue panel regardless of partial/full acceptance
+        showQueuePanel();
+
+        if (data.accepted && data.accepted.length > 0) {
+            // Add each accepted job to our local queue state
+            data.accepted.forEach(item => {
+                _queuedJobs.push({
+                    jobId:    item.job_id,
+                    filename: item.filename,
+                    status:   "queued",
+                    message:  "Waiting in queue…",
+                });
             });
-        } else if (result.status === "success") {
-            setProgress(100, "Done!");
-            setTimeout(() => hideProgress(), 800);
-            showUploadStatus(`✅ ${result.message}`, "success");
-            clearSelectedFile();
-            loadKnowledgeBase();
-        } else {
-            hideProgress();
-            showUploadStatus(`❌ ${result.message}`, "error");
-            uploadBtn.disabled = false;
-            uploadBtnText.textContent = `Upload ${selectedFile ? selectedFile.name : "file"}`;
         }
+
+        if (data.rejected && data.rejected.length > 0) {
+            // Add rejected items as instant-error rows
+            data.rejected.forEach(item => {
+                _queuedJobs.push({
+                    jobId:    null,
+                    filename: item.filename,
+                    status:   "error",
+                    message:  item.reason || "Rejected",
+                });
+            });
+        }
+
+        renderQueuePanel();
+        startQueuePolling();
+
     } catch (err) {
-        hideProgress();
-        showUploadStatus(`❌ Network error: ${err.message}`, "error");
-        uploadBtn.disabled = false;
-        uploadBtnText.textContent = `Upload ${selectedFile ? selectedFile.name : "file"}`;
+        showQueuePanel();
+        filesToUpload.forEach(f => {
+            _queuedJobs.push({
+                jobId: null, filename: f.name,
+                status: "error", message: `Network error: ${err.message}`,
+            });
+        });
+        renderQueuePanel();
+    } finally {
+        uploadBtn.classList.remove("loading");
+        uploadBtn.disabled = true;
+        uploadBtnText.textContent = "Select files to upload";
     }
-    uploadBtn.classList.remove("loading");
 }
 
-function showProgress(pct, label) { progressWrap.style.display = "flex"; setProgress(pct, label); }
-function setProgress(pct, label)  { progressBar.style.width = pct + "%"; progressLabel.textContent = label || "Processing…"; }
-function hideProgress()           { progressBar.style.width = "0%"; progressWrap.style.display = "none"; }
-function showUploadStatus(msg, type) { uploadStatus.textContent = msg; uploadStatus.className = "upload-status " + type; uploadStatus.style.display = "block"; }
-function hideUploadStatus()          { uploadStatus.style.display = "none"; uploadStatus.textContent = ""; uploadStatus.className = "upload-status"; }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  QUEUE PANEL — render + polling
+// ════════════════════════════════════════════════════════════════════════════
 
-// ── (unified KB functions defined above) ──────────────────────────────────
+function showQueuePanel() {
+    const panel = document.getElementById("uploadQueuePanel");
+    if (panel) panel.style.display = "block";
+}
+
+function renderQueuePanel() {
+    const listEl   = document.getElementById("uqJobList");
+    const summaryEl= document.getElementById("uqSummary");
+    const clearBtn = document.getElementById("uqClearBtn");
+    if (!listEl) return;
+
+    const total     = _queuedJobs.length;
+    const done      = _queuedJobs.filter(j => j.status === "done").length;
+    const errors    = _queuedJobs.filter(j => j.status === "error").length;
+    const active    = _queuedJobs.filter(j => j.status === "processing").length;
+    const queued    = _queuedJobs.filter(j => j.status === "queued").length;
+
+    if (summaryEl) {
+        const parts = [];
+        if (done)    parts.push(`${done} done`);
+        if (errors)  parts.push(`${errors} failed`);
+        if (active)  parts.push(`${active} processing`);
+        if (queued)  parts.push(`${queued} queued`);
+        summaryEl.textContent = parts.join(" · ");
+    }
+
+    // Show "Clear done" only if there is something to clear
+    if (clearBtn) clearBtn.style.display = (done + errors > 0) ? "inline-flex" : "none";
+
+    listEl.innerHTML = _queuedJobs.map((job, i) => {
+        const ft = getFileType(job.filename);
+        let statusClass = "uq-status-queued";
+        let statusIcon  = "⏳";
+        let statusLabel = "Queued";
+
+        if (job.status === "processing") { statusClass = "uq-status-processing"; statusIcon = ""; statusLabel = "Processing"; }
+        if (job.status === "done")       { statusClass = "uq-status-done";       statusIcon = "✅"; statusLabel = "Done"; }
+        if (job.status === "error")      { statusClass = "uq-status-error";      statusIcon = "❌"; statusLabel = "Failed"; }
+
+        const spinnerHtml = job.status === "processing"
+            ? `<span class="uq-spinner"></span>`
+            : `<span class="uq-status-icon">${statusIcon}</span>`;
+
+        // Progress bar — animates while processing
+        const progressHtml = (job.status === "queued" || job.status === "processing")
+            ? `<div class="uq-progress-track"><div class="uq-progress-fill ${job.status === "processing" ? "uq-progress-anim" : ""}"></div></div>`
+            : "";
+
+        const msgHtml = job.message
+            ? `<span class="uq-job-msg ${statusClass}-text">${escHtml(job.message)}</span>`
+            : "";
+
+        return `
+        <div class="uq-job-row ${statusClass}" data-idx="${i}">
+            <div class="uq-job-icon" style="background:${ft.bg};color:${ft.color};border:1px solid ${ft.color}44;">${ft.icon}</div>
+            <div class="uq-job-body">
+                <div class="uq-job-top">
+                    <span class="uq-job-name" title="${escHtml(job.filename)}">${escHtml(job.filename)}</span>
+                    <span class="uq-job-status-wrap">${spinnerHtml}<span class="uq-job-status-label ${statusClass}-text">${statusLabel}</span></span>
+                </div>
+                ${progressHtml}
+                ${msgHtml}
+            </div>
+        </div>`;
+    }).join("");
+}
+
+function startQueuePolling() {
+    if (_queuePollTimer) return;   // already polling
+
+    _queuePollTimer = setInterval(async () => {
+        const activeJobs = _queuedJobs.filter(j => j.jobId && (j.status === "queued" || j.status === "processing"));
+
+        if (!activeJobs.length) {
+            clearInterval(_queuePollTimer);
+            _queuePollTimer = null;
+            loadKnowledgeBase();   // refresh the KB table when all jobs finish
+            return;
+        }
+
+        let anyChange = false;
+        await Promise.all(activeJobs.map(async job => {
+            try {
+                const res  = await fetch(`${API}/admin/job/${job.jobId}`, { credentials: "include" });
+                const data = await res.json();
+
+                if (data.status !== job.status) anyChange = true;
+
+                job.status  = data.status;
+                job.message = data.message || job.message;
+
+                if (data.status === "done") {
+                    loadKnowledgeBase();   // update KB table as each file completes
+                }
+            } catch (_) {}
+        }));
+
+        if (anyChange) renderQueuePanel();
+    }, 2000);
+}
+
+function clearCompletedJobs() {
+    _queuedJobs = _queuedJobs.filter(j => j.status === "queued" || j.status === "processing");
+    renderQueuePanel();
+    if (!_queuedJobs.length) {
+        const panel = document.getElementById("uploadQueuePanel");
+        if (panel) panel.style.display = "none";
+    }
+}
 
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -452,8 +601,11 @@ modalConfirm.addEventListener("click", async () => {
     if (!pendingDelete) return;
     const filename = pendingDelete;
     closeDeleteModal();
-    showUploadStatus(`⏳ Removing '${filename}'…`, "info");
     modalConfirm.disabled = true;
+
+    // Show feedback in the queue panel or as a temporary toast
+    _showGlobalToast(`⏳ Removing '${filename}'…`, "info");
+
     try {
         const res  = await fetch(`${API}/admin/delete-document`, {
             method: "POST",
@@ -463,16 +615,15 @@ modalConfirm.addEventListener("click", async () => {
         });
         const data = await res.json();
         if (data.status === "success") {
-            showUploadStatus(`🗑️ ${data.message}`, "success");
+            _showGlobalToast(`🗑️ ${data.message}`, "success");
             loadKnowledgeBase();
         } else if (res.status === 409) {
-            // File is locked — make the message prominent and persistent
-            showUploadStatus(`🔒 ${data.message}`, "error");
+            _showGlobalToast(`🔒 ${data.message}`, "error");
         } else {
-            showUploadStatus(`❌ ${data.message}`, "error");
+            _showGlobalToast(`❌ ${data.message}`, "error");
         }
     } catch (err) {
-        showUploadStatus(`❌ Network error: ${err.message}`, "error");
+        _showGlobalToast(`❌ Network error: ${err.message}`, "error");
     } finally {
         modalConfirm.disabled = false;
     }
@@ -482,13 +633,31 @@ if (refreshBtn) refreshBtn.addEventListener("click", loadKnowledgeBase);
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  JOB POLLING HELPER
+//  GLOBAL TOAST — lightweight status notification bar
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Poll /admin/job/<job_id> every 2 seconds until done or error.
- * callbacks: { onProgress(pct, label), onDone(message), onError(message) }
- */
+let _toastTimer = null;
+
+function _showGlobalToast(msg, type = "info") {
+    let toast = document.getElementById("globalToast");
+    if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "globalToast";
+        toast.className = "global-toast";
+        document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.className   = `global-toast global-toast--${type} global-toast--visible`;
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => {
+        toast.classList.remove("global-toast--visible");
+    }, type === "error" ? 6000 : 4000);
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  JOB POLLING HELPER  (used by URL scrape path)
+// ════════════════════════════════════════════════════════════════════════════
 async function _pollJob(jobId, { onProgress, onDone, onError }) {
     const POLL_MS    = 2000;
     const MAX_POLLS  = 600;   // 20 minutes max
@@ -647,7 +816,6 @@ function setScrapeProgress(pct, label)   { scrapeProgressBar.style.width = pct +
 function hideScrapeProgress()            { scrapeProgressBar.style.width = "0%"; scrapeProgressWrap.style.display = "none"; }
 function showScrapeStatus(msg, type)     { scrapeStatus.textContent = msg; scrapeStatus.className = "upload-status " + type; scrapeStatus.style.display = "block"; }
 function hideScrapeStatus()              { scrapeStatus.style.display = "none"; scrapeStatus.textContent = ""; scrapeStatus.className = "upload-status"; }
-
 
 // ════════════════════════════════════════════════════════════════════════════
 //  SECTION NAVIGATION

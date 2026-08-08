@@ -29,6 +29,9 @@ from langchain_core.documents import Document
 from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 
 from config import Config
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def chunk_documents(documents: list) -> list:
@@ -48,7 +51,7 @@ def chunk_documents(documents: list) -> list:
     raw_chunks = text_splitter.split_documents(documents)
     enriched   = [_enrich(chunk) for chunk in raw_chunks]
 
-    print(f"Created {len(enriched)} chunks from {len(documents)} documents.")
+    logger.info(f"Created {len(enriched)} chunks from {len(documents)} document(s).")
     return enriched
 
 

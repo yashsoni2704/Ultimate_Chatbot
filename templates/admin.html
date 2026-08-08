@@ -97,8 +97,9 @@
             <div class="info-section">
                 <p class="section-label">Notes</p>
                 <ul class="info-list">
+                    <li>Select multiple files at once — they process in order</li>
+                    <li>Each file shows its own live status in the queue panel</li>
                     <li>Duplicate files are skipped automatically</li>
-                    <li>Multiple files can be uploaded one by one</li>
                     <li>Deleted docs are removed from the registry</li>
                     <li>Chat users see changes immediately</li>
                 </ul>
@@ -165,36 +166,43 @@
                 <!-- ── Collapsible upload forms ── -->
                 <div id="kbUploadPanel" style="display:none;margin-bottom:20px;">
 
-                    <!-- Document upload -->
+                    <!-- Document upload — multi-file -->
                     <section class="upload-card" id="kbFormDoc" style="display:none;">
                         <div class="upload-card-header">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                            <h3>Upload Document</h3>
+                            <h3>Upload Documents</h3>
                             <button class="kb-form-close" onclick="closeUploadForm()" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                         </div>
+
+                        <!-- Drop zone -->
                         <div id="dropZone" class="drop-zone">
                             <div class="drop-zone-inner">
-                                <div class="drop-icon-wrap" id="dropIconWrap"><svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-                                <p class="drop-title">Drag &amp; drop your file here</p>
-                                <p class="drop-sub">PDF, DOCX, XLSX, PPTX, CSV, TXT, RTF</p>
-                                <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.rtf" style="display:none;">
-                                <button class="browse-btn" id="browseBtn">Browse File</button>
+                                <div class="drop-icon-wrap"><svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+                                <p class="drop-title">Drag &amp; drop files here</p>
+                                <p class="drop-sub">PDF, DOCX, XLSX, PPTX, CSV, TXT, RTF &mdash; select multiple at once</p>
+                                <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.csv,.txt,.rtf" multiple style="display:none;">
+                                <button class="browse-btn" id="browseBtn">Browse Files</button>
                             </div>
                         </div>
-                        <div id="filePreview" class="file-preview" style="display:none;">
-                            <div class="file-preview-icon" id="fileTypeIcon"></div>
-                            <div class="file-preview-body">
-                                <p class="file-preview-name" id="previewName">&#8212;</p>
-                                <div class="file-preview-meta"><span class="file-type-badge" id="fileTypeBadge">&#8212;</span><span class="file-preview-size" id="previewSize">&#8212;</span></div>
-                            </div>
-                            <button class="remove-btn" id="removeFileBtn" title="Remove"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-                        </div>
+
+                        <!-- Selected-file list (shown before submit) -->
+                        <div id="selectedFilesList" class="selected-files-list" style="display:none;"></div>
+
+                        <!-- Upload button -->
                         <button class="upload-btn" id="uploadBtn" disabled>
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                            <span id="uploadBtnText">Select a file to upload</span>
+                            <span id="uploadBtnText">Select files to upload</span>
                         </button>
-                        <div id="progressWrap" class="progress-wrap" style="display:none;"><div class="progress-bar-track"><div class="progress-bar-fill" id="progressBar"></div></div><span class="progress-label" id="progressLabel">Processing&#8230;</span></div>
-                        <div id="uploadStatus" class="upload-status" style="display:none;"></div>
+
+                        <!-- Upload queue panel — appears after submit -->
+                        <div id="uploadQueuePanel" class="upload-queue-panel" style="display:none;">
+                            <div class="uq-header">
+                                <span class="uq-title">Upload Queue</span>
+                                <span class="uq-summary" id="uqSummary"></span>
+                                <button class="uq-clear-btn" id="uqClearBtn" onclick="clearCompletedJobs()" style="display:none;">Clear done</button>
+                            </div>
+                            <div id="uqJobList" class="uq-job-list"></div>
+                        </div>
                     </section>
 
                     <!-- URL scrape -->
