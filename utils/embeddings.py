@@ -57,6 +57,17 @@ _LOCK_FILE = os.path.join(Config.QDRANT_PATH, "write.lock")
 # (the portalocker handles inter-process; this handles intra-process)
 _thread_lock = threading.Lock()
 
+def _reset_stale_lock():
+    """Called once at import time — removes any leftover lock file from a crashed process."""
+    try:
+        if os.path.exists(_LOCK_FILE):
+            os.remove(_LOCK_FILE)
+            logger.info("🧹 Cleared stale write.lock from previous session")
+    except OSError:
+        pass
+
+_reset_stale_lock()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Cross-process + cross-thread write lock
@@ -70,17 +81,21 @@ class _WriteLock:
         with _WriteLock():
             ...  # only one thread/process inside here at a time
     """
-    TIMEOUT = 600   # seconds — longest expected embedding job
+    TIMEOUT = 120   # seconds — reduced from 600 so failures surface quickly
 
     def __enter__(self):
         os.makedirs(Config.QDRANT_PATH, exist_ok=True)
+
+        # Acquire intra-process thread lock
         self._thread_acquired = _thread_lock.acquire(timeout=self.TIMEOUT)
         if not self._thread_acquired:
-            raise TimeoutError("Could not acquire intra-process write lock after 10 min.")
+            raise TimeoutError(
+                "Could not acquire intra-process write lock after 2 min. "
+                "Restarting the server will clear the lock."
+            )
+
         try:
             self._fh = open(_LOCK_FILE, "w")
-            portalocker.lock(self._fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
-            # If lock is held by another process, poll until timeout
             deadline = time.monotonic() + self.TIMEOUT
             while True:
                 try:
@@ -88,10 +103,16 @@ class _WriteLock:
                     break
                 except portalocker.LockException:
                     if time.monotonic() > deadline:
-                        raise TimeoutError(
-                            "Could not acquire cross-process write lock after 10 min. "
-                            "Another ingestion job may be stuck."
-                        )
+                        # Stale lock — force-delete and recreate
+                        logger.warning("⚠️  Stale write.lock detected — force-clearing it")
+                        try:
+                            self._fh.close()
+                            os.remove(_LOCK_FILE)
+                        except OSError:
+                            pass
+                        self._fh = open(_LOCK_FILE, "w")
+                        portalocker.lock(self._fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                        break
                     time.sleep(0.5)
         except Exception:
             _thread_lock.release()
@@ -105,7 +126,7 @@ class _WriteLock:
         except Exception:
             pass
         finally:
-            if self._thread_acquired:
+            if getattr(self, "_thread_acquired", False):
                 _thread_lock.release()
 
 

@@ -1619,25 +1619,36 @@ code {
     background: rgba(255,255,255,0.07);
     border-radius: 99px;
     overflow: hidden;
+    position: relative;
 }
 
 .uq-progress-fill {
     height: 100%;
     width: 30%;
-    background: linear-gradient(90deg, #f59e0b, #ef4444);
+    background: linear-gradient(90deg, #6366f1, #8b5cf6);
     border-radius: 99px;
 }
 
-/* Indeterminate animation for in-progress rows */
+/* Indeterminate animation for in-progress rows — smooth continuous sweep */
 .uq-progress-anim {
-    width: 40%;
-    animation: uqProgressSlide 1.6s ease-in-out infinite;
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 45%;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        #6366f1 30%,
+        #8b5cf6 60%,
+        transparent 100%);
+    border-radius: 99px;
+    animation: uqProgressSlide 1.4s linear infinite;
+    will-change: transform;
 }
 
 @keyframes uqProgressSlide {
-    0%   { transform: translateX(-120%); }
-    50%  { transform: translateX(160%); }
-    100% { transform: translateX(160%); }
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(320%); }
 }
 
 /* Message line below progress */

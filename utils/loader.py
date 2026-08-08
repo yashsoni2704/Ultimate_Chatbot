@@ -28,6 +28,12 @@ import os
 import zipfile
 from datetime import datetime
 
+# ── Disable torch JIT/inductor BEFORE any torch import ───────────────────────
+# On machines without MSVC (cl.exe), torch.inductor tries to compile C++ and
+# crashes. Setting these env vars forces eager execution instead.
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+
 # ── LangChain ────────────────────────────────────────────────────────────────
 from langchain_core.documents import Document
 from langchain_community.document_loaders import CSVLoader
@@ -70,23 +76,45 @@ def _get_docling_converter():
     Return a shared DocumentConverter, creating it on the first call.
 
     PipelineOptions are configured for maximum quality:
-      • do_ocr=True          — always run OCR on image regions / scanned pages
-      • do_table_structure=True — reconstruct table cells (not just raw text)
+      • do_ocr=True                    — always run OCR
+      • ocr_options = RapidOcrOptions(
+            mode=OcrMode.FULL_PAGE     — treat EVERY page as an image and
+        )                                run OCR on the full page.
+                                         This is the key setting that makes
+                                         image-only / scanned PDFs work.
+      • generate_page_images=True      — render each page to a bitmap first
+      • images_scale=2.0               — 2× resolution → sharper OCR output
+      • do_table_structure=True        — TableFormer → clean table text
     """
     global _docling_converter
     if _docling_converter is None:
         try:
             from docling.document_converter import DocumentConverter, PdfFormatOption
-            from docling.pipeline.standard_pdf_pipeline import PdfPipelineOptions
+            from docling.datamodel.pipeline_options import (
+                PdfPipelineOptions,
+                RapidOcrOptions,
+                OcrMode,
+            )
+
+            ocr_opts = RapidOcrOptions(
+                mode=OcrMode.FULL_PAGE,
+                lang=["en"],   # English OCR for scanned documents
+            )
 
             pdf_opts = PdfPipelineOptions()
-            pdf_opts.do_ocr             = True   # OCR any image-only regions
-            pdf_opts.do_table_structure = True   # TableFormer → clean table text
+            pdf_opts.do_ocr               = True      # enable OCR engine
+            pdf_opts.ocr_options          = ocr_opts  # full-page mode → scanned PDFs
+            pdf_opts.generate_page_images = True      # render pages as images for OCR
+            pdf_opts.images_scale         = 2.0       # 2× res → sharper text detection
+            pdf_opts.do_table_structure   = True      # TableFormer → structured tables
 
             _docling_converter = DocumentConverter(
                 format_options={"pdf": PdfFormatOption(pipeline_options=pdf_opts)}
             )
-            logger.info("✅ Docling DocumentConverter initialised (OCR + TableFormer enabled)")
+            logger.info(
+                "✅ Docling DocumentConverter initialised "
+                "(OCR=FULL_PAGE + TableFormer + 2× image scale)"
+            )
         except Exception as exc:
             logger.error(f"❌ Docling failed to initialise: {exc}")
             raise RuntimeError(
@@ -99,16 +127,9 @@ def _get_docling_converter():
 def _docling_convert_to_documents(file_path: str, file_type: str) -> list:
     """
     Convert any Docling-supported file to a list of LangChain Documents.
-
-    Strategy
-    --------
-    • Convert with Docling → get a DoclingDocument object
-    • Export each page (or the whole file for non-PDF) to Markdown
-    • Wrap every non-empty page as its own Document with metadata
-
-    For PDFs we iterate page-by-page so the page number is preserved in
-    metadata, matching what pdfplumber did.  For DOCX/PPTX/XLSX the whole
-    file is one Markdown export split on Docling's page breaks.
+    For PDFs: collects text directly from doc.texts (handles scanned/image PDFs
+    where export_to_markdown returns only '<!-- image -->').
+    For DOCX/PPTX/XLSX: uses markdown export with page-break splitting.
     """
     converter = _get_docling_converter()
 
@@ -119,36 +140,27 @@ def _docling_convert_to_documents(file_path: str, file_type: str) -> list:
     documents = []
 
     if file_type == "pdf":
-        # Export each page individually to preserve page-level metadata
-        total_pages = len(doc.pages) if hasattr(doc, "pages") and doc.pages else 1
-        for page_no in range(total_pages):
-            try:
-                page_md = doc.export_to_markdown(page_no=page_no).strip()
-            except TypeError:
-                # Older Docling versions don't support page_no — fall back to full
-                page_md = doc.export_to_markdown().strip()
-            if page_md:
-                documents.append(Document(
-                    page_content=page_md,
-                    metadata={
-                        "source":    file_path,
-                        "page":      page_no,
-                        "file_type": "pdf",
-                        "extractor": "docling",
-                    },
-                ))
-        # If per-page export failed, fall back to full-document export
-        if not documents:
-            full_md = doc.export_to_markdown().strip()
-            if full_md:
-                documents.append(Document(
-                    page_content=full_md,
-                    metadata={
-                        "source":    file_path,
-                        "file_type": "pdf",
-                        "extractor": "docling",
-                    },
-                ))
+        # Try markdown export first (works well for text-layer PDFs)
+        full_md = doc.export_to_markdown().strip()
+
+        # If markdown is empty or just image placeholders, fall back to
+        # collecting raw text items directly — this handles scanned PDFs where
+        # the layout model classifies the page as a picture.
+        if not full_md or full_md.replace("<!-- image -->", "").strip() == "":
+            logger.info("  Markdown empty — collecting text directly from doc.texts")
+            all_texts = [t.text.strip() for t in doc.texts if t.text and t.text.strip()]
+            full_md   = "\n".join(all_texts)
+
+        if full_md.strip():
+            documents.append(Document(
+                page_content=full_md.strip(),
+                metadata={
+                    "source":    file_path,
+                    "page":      0,
+                    "file_type": "pdf",
+                    "extractor": "docling",
+                },
+            ))
     else:
         # DOCX / PPTX — one Markdown export, split on page-break markers
         full_md = doc.export_to_markdown().strip()
@@ -184,14 +196,9 @@ def _docling_convert_to_documents(file_path: str, file_type: str) -> list:
 
 def _load_pdf(file_path: str) -> list:
     """
-    Extract text from a PDF.
-
-    Pipeline
-    --------
-    1. Try Docling (AI layout + OCR + table reconstruction).
-       Handles scanned PDFs, multi-column layouts, embedded images, tables.
-    2. If Docling fails for any reason, fall back to PyPDFLoader
-       so ingestion never silently stops.
+    Extract text from a PDF using Docling.
+    Docling handles both text-layer and image-only/scanned PDFs via OCR.
+    Falls back to PyPDFLoader only if Docling itself crashes.
     """
     try:
         documents = _docling_convert_to_documents(file_path, "pdf")
@@ -205,7 +212,7 @@ def _load_pdf(file_path: str) -> list:
     except Exception as exc:
         logger.warning(f"  Docling failed ({exc}) — falling back to PyPDFLoader")
 
-    # Fallback
+    # Fallback — text-layer PDFs only
     from langchain_community.document_loaders import PyPDFLoader
     docs = PyPDFLoader(file_path).load()
     for d in docs:

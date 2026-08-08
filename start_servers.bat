@@ -6,6 +6,11 @@ set "QDRANT=%ROOT%qdrant.exe"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUNBUFFERED=1"
 
+:: Disable torch JIT compiler (requires cl.exe / MSVC which is not installed).
+:: Without this, Docling's model compilation fails and OCR breaks.
+set "TORCHDYNAMO_DISABLE=1"
+set "TORCH_COMPILE_DISABLE=1"
+
 title DocMind - Start Servers
 
 echo.
