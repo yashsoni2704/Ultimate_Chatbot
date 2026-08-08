@@ -26,17 +26,25 @@ if /I not "%CONFIRM%"=="RESET" (
 
 echo.
 echo  Stopping DocMind services...
-call "%ROOT%stop_servers.bat"
+call "%ROOT%stop_servers.bat" >nul 2>&1
+timeout /t 3 /nobreak >nul
 
 echo  Removing uploads, vector data, snapshots, and logs...
-for %%D in ("%ROOT%uploads" "%ROOT%vector_store" "%ROOT%storage" "%ROOT%snapshots" "%ROOT%logs") do (
+
+:: Delete each folder entirely, then recreate it (including required sub-folders)
+for %%D in ("%ROOT%uploads" "%ROOT%vector_store" "%ROOT%storage" "%ROOT%logs") do (
     if exist "%%~D" rmdir /s /q "%%~D"
     mkdir "%%~D" >nul 2>&1
 )
+
+:: snapshots needs its tmp\upload sub-folder recreated for the app to work
+if exist "%ROOT%snapshots" rmdir /s /q "%ROOT%snapshots"
+mkdir "%ROOT%snapshots\tmp\upload" >nul 2>&1
 
 echo.
 echo  ==========================================
 echo   Reset complete. Run start_servers.bat to start fresh.
 echo  ==========================================
 echo.
+pause
 exit /b 0

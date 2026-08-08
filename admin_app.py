@@ -562,6 +562,7 @@ def admin_stt_set():
 
 @admin_app.route("/admin/health")
 def admin_health():
+    mongo_ok = False
     try:
         get_db().command("ping")
         mongo_ok = True

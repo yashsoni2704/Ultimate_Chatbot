@@ -2,7 +2,6 @@
 setlocal EnableExtensions
 
 set "ROOT=%~dp0"
-set "PYTHON=%ROOT%Yash\Scripts\python.exe"
 set "QDRANT=%ROOT%qdrant.exe"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUNBUFFERED=1"
@@ -15,11 +14,42 @@ echo   DocMind - Starting All Servers
 echo  ==========================================
 echo.
 
-if not exist "%PYTHON%" (
-    echo  ERROR: Python not found at: %PYTHON%
-    pause
-    exit /b 1
+:: ── Auto-detect Python from the project venv ─────────────────────────────
+:: Priority 1: Yash\Scripts\python.exe  (original dev machine)
+:: Priority 2: any venv\Scripts\python.exe found one level down
+:: Priority 3: python on system PATH
+set "PYTHON="
+
+if exist "%ROOT%Yash\Scripts\python.exe" (
+    set "PYTHON=%ROOT%Yash\Scripts\python.exe"
+    goto :python_found
 )
+
+:: Scan for any venv folder containing Scripts\python.exe
+for /d %%V in ("%ROOT%*") do (
+    if exist "%%V\Scripts\python.exe" (
+        set "PYTHON=%%V\Scripts\python.exe"
+        goto :python_found
+    )
+)
+
+:: Last resort — system python
+where python >nul 2>&1
+if not errorlevel 1 (
+    set "PYTHON=python"
+    goto :python_found
+)
+
+echo  ERROR: No Python interpreter found.
+echo  Please create a virtual environment in the project folder, e.g.:
+echo    python -m venv venv
+echo    venv\Scripts\pip install -r requirements.txt
+pause
+exit /b 1
+
+:python_found
+echo  Python : %PYTHON%
+
 
 if not exist "%QDRANT%" (
     echo  ERROR: qdrant.exe not found at: %QDRANT%

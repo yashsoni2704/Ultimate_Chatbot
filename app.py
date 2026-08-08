@@ -246,13 +246,14 @@ def load_document():
                 return jsonify({"status": "error", "message": "Invalid Google Drive URL."}), 400
 
             import requests as req
+            temp_path = None
             try:
                 if "/d/" not in url:
                     return jsonify({"status": "error", "message": "Invalid Google Drive URL."})
 
                 file_id      = url.split("/d/")[1].split("/")[0]
                 download_url = f"https://drive.google.com/uc?id={file_id}"
-                response     = req.get(download_url)
+                response     = req.get(download_url, timeout=30)
 
                 if response.status_code != 200:
                     return jsonify({
@@ -263,8 +264,9 @@ def load_document():
                 temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
                 temp.write(response.content)
                 temp.close()
+                temp_path = temp.name
 
-                message = process_document(temp.name)
+                message = process_document(temp_path)
                 return jsonify({"status": "success", "message": message})
 
             except Exception:
@@ -272,6 +274,13 @@ def load_document():
                     "status": "error",
                     "message": "Unable to access Google Drive file."
                 }), 400
+            finally:
+                # Always clean up the temp file whether success or failure
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
 
         return jsonify({
             "status": "error",
@@ -356,20 +365,42 @@ def delete_document():
                 "message": f"'{filename}' not found in knowledge base."
             }), 404
 
-        record = matching[0]
-
-        # Remove vectors from Qdrant
-        deleted = delete_document_chunks(filename)
-        logger.info(f"  Removed {deleted} vector(s) for '{filename}' from Qdrant")
-
-        # Remove from registry
-        _save_registry([r for r in records if r.get("filename") != filename])
-
-        # Remove physical file if it still exists
+        record    = matching[0]
         file_path = record.get("path", "")
+
+        # ── Step 1: Try to delete the physical file FIRST (before touching
+        # vectors / registry).  If the file is locked by Windows (e.g. open in
+        # Excel / a PDF reader), fail immediately with a clear message — nothing
+        # has been changed yet.
         if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"  Deleted file: {file_path}")
+            try:
+                os.remove(file_path)
+                logger.info(f"  Deleted file from disk: {file_path}")
+            except PermissionError:
+                return jsonify({
+                    "status":  "error",
+                    "message": (
+                        f"'{filename}' is currently open in another application. "
+                        "Please close the file and try again."
+                    )
+                }), 409
+            except OSError as e:
+                return jsonify({
+                    "status":  "error",
+                    "message": f"Could not delete file: {e}"
+                }), 500
+
+        # ── Step 2: Delete vectors from Qdrant
+        try:
+            deleted = delete_document_chunks(filename)
+            logger.info(f"  Removed {deleted} vector(s) for '{filename}' from Qdrant")
+        except Exception as vec_err:
+            # Vectors failed — file already gone from disk.  Still clean registry
+            # so the UI stays consistent.
+            logger.error(f"  Vector delete failed for '{filename}': {vec_err} — cleaning registry anyway")
+
+        # ── Step 3: Remove from registry
+        _save_registry([r for r in records if r.get("filename") != filename])
 
         logger.info(f" '{filename}' fully removed from knowledge base")
         return jsonify({

@@ -35,7 +35,6 @@ _llm        = None
 _reranker   = None
 _prompt_no_history   = None
 _prompt_with_history = None
-_document_prompt     = None
 
 
 def _get_embeddings():
@@ -110,86 +109,66 @@ def _get_llm():
 
 
 def _get_prompts():
-    """Build and cache the system/user chat prompts (also deferred)."""
-    global _prompt_no_history, _prompt_with_history, _document_prompt
+    """Build and cache the PromptTemplate objects (also deferred)."""
+    global _prompt_no_history, _prompt_with_history
     if _prompt_no_history is None:
-        from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-
-        _prompt_no_history = ChatPromptTemplate.from_messages([
-            ("system", PROMPT_NO_HISTORY),
-            ("human", "Context:\n{context}\n\nQuestion:\n{input}\n\nAnswer:"),
-        ])
-        _prompt_with_history = ChatPromptTemplate.from_messages([
-            ("system", PROMPT_WITH_HISTORY),
-            ("human", "Context:\n{context}\n\nChat History:\n{chat_history}\n\nQuestion:\n{input}\n\nAnswer:"),
-        ])
-        _document_prompt = PromptTemplate.from_template(
-            "Source: {source}\nRetrieved content:\n{page_content}"
+        from langchain_core.prompts import PromptTemplate
+        _prompt_no_history = PromptTemplate(
+            template=PROMPT_NO_HISTORY,
+            input_variables=["context", "input"],
         )
-    return _prompt_no_history, _prompt_with_history, _document_prompt
+        _prompt_with_history = PromptTemplate(
+            template=PROMPT_WITH_HISTORY,
+            input_variables=["context", "chat_history", "input"],
+        )
+    return _prompt_no_history, _prompt_with_history
 
 
 # =====================================
 # Prompts
 # =====================================
 
-# Used when CONVERSATION_HISTORY = False
-PROMPT_NO_HISTORY = """
-You are a friendly and helpful assistant. Talk like a real person — warm, clear, and easy to understand. Write in flowing, natural sentences.
+SYSTEM_PROMPT = """You are a knowledgeable and helpful assistant. Answer only using the information provided in the context below. Do not use outside knowledge or invent details.
 
-Answer ONLY using information from the provided context below. Do not use your own knowledge or make anything up.
+TONE AND FORMAT FOR NORMAL ANSWERS:
+Write in plain, natural sentences — the way a helpful person speaks. Do not use bullet points, bold text, headers, or lists unless the user explicitly asks for them. Keep answers focused and conversational. Never mention page numbers, section names, or document structure. If the context does not contain enough information to answer, say so briefly and suggest the user rephrase or ask something else.
 
-Important: Never mention page numbers, section numbers, document names, or any internal document structure in your answer. Just share the information naturally as if you already know it — the user does not need to know where it came from.
+COMPARISON QUESTIONS — MANDATORY TABLE FORMAT:
+When the user asks to compare, contrast, or evaluate two or more things side by side — including questions like "compare X and Y", "difference between X and Y", "X vs Y", "X or Y", "which is better", or any question that asks about the same feature across multiple items — you MUST respond with a Markdown table.
 
-Understand the user's question naturally. If the retrieved context gives enough relevant information to fulfil the user's need, answer helpfully using that information. Only say "I couldn't find that — could you try rephrasing, or ask about something else?" when the retrieved context genuinely does not contain enough information to answer.
+Table rules:
+- One column per item being compared, one row per feature or attribute
+- Fill cells using only the context provided; use "-" for any value not present
+- If an entire column would be all "-" entries, exclude that item from the table and note below it: "I don't have enough information about [item] to include it in the comparison."
+- After the table, add 2–3 sentences summarising the key differences in plain language
 
-COMPARISON TABLE RULE (Markdown table is mandatory, not optional):
-For every comparison, do not answer only in prose. Start with a valid Markdown table: a header row, separator row, and at least one data row.
-This includes requests such as "compare", "difference between", "which is better", "A vs B", "A or B", or asking for the same feature across multiple cars.
-If the user asks to compare two or more items (cars, models, prices, features, specs, variants, etc.) — or mentions multiple items side by side — you MUST respond with a Markdown table.
-
-Columns = the items being compared (one column per item)
-Rows = attributes or features (e.g. Engine, Price, Mileage, Boot Space, Safety, etc.)
-Fill each cell using ONLY information from the context
-Use "-" for a value that is genuinely not present in the context
-STRICT RULE: Never leave ALL cells in a column as "-". If more than 2 values are missing for any single item, that item does not have enough data — do NOT include it as a column. Instead, mention at the end: "I don't have enough data on [item] to include it in the comparison."
-After the table, write 2-3 sentences of natural summary highlighting the key differences
-
-GOOD example (correct):
-
-Feature	Kushaq	Slavia
-Engine	1.0 TSI	1.5 TSI
-Transmission	6-speed MT / AT	6-speed MT / AT
-Boot Space	385 L	521 L
-Safety	5-star NCAP	-
-Price	₹10.9 – 19.9 L	₹11.4 – 18.4 L
-
-BAD example (wrong — never do this):
-
-Feature	Kushaq	Slavia
-Engine	-	-
-Transmission	-	-
-Boot Space	-	-
-Safety	-	-
-Price	-	-
-(This is wrong because all values are missing — skip rows with no data instead.)		
-
-BAD example (wrong — never do this):
-
-Feature	Kushaq	Slavia
-Engine	1.0 TSI	-
-Transmission	6-speed MT / AT	-
-Boot Space	385 L	-
-Safety	5-star NCAP	-
-Price	₹10.9 – 19.9 L	-
-(This is wrong because one entire column is blank — drop that item from the table and note it below.)		
-
-For all other questions (not a comparison), respond in flowing natural sentences as usual.
+For everything else, answer in flowing natural sentences without any tables or lists.
 """
 
-# Keep the same answer and citation rules regardless of whether chat history
-# is enabled. Chat history is passed separately only to resolve follow-ups.
-PROMPT_WITH_HISTORY = PROMPT_NO_HISTORY
+# Both prompts share the same system instructions.
+# The only difference is that the history variant receives an extra {chat_history} slot.
+PROMPT_NO_HISTORY = SYSTEM_PROMPT + """
+Context:
+{context}
+
+Question:
+{input}
+
+Answer:
+"""
+
+PROMPT_WITH_HISTORY = SYSTEM_PROMPT + """
+Context:
+{context}
+
+Chat History:
+{chat_history}
+
+Question:
+{input}
+
+Answer:
+"""
 
 prompt_no_history = None   # built lazily in _get_prompts()
 prompt_with_history = None
@@ -377,7 +356,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
         from langchain_classic.chains import create_retrieval_chain
         from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
-        prompt_no_hist, prompt_with_hist, document_prompt = _get_prompts()
+        prompt_no_hist, prompt_with_hist = _get_prompts()
         llm = _get_llm()
 
         # ── Choose prompt & build chain ────────────────────────
@@ -390,9 +369,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
                 logger.info(f"  {line}")
             logger.info("-" * 60)
 
-            document_chain  = create_stuff_documents_chain(
-                llm, prompt_with_hist, document_prompt=document_prompt
-            )
+            document_chain  = create_stuff_documents_chain(llm, prompt_with_hist)
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (with history)")
             logger.info("")
@@ -411,9 +388,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
             else:
                 logger.info("Conversation history DISABLED — using plain prompt")
 
-            document_chain  = create_stuff_documents_chain(
-                llm, prompt_no_hist, document_prompt=document_prompt
-            )
+            document_chain  = create_stuff_documents_chain(llm, prompt_no_hist)
             retrieval_chain = create_retrieval_chain(retriever, document_chain)
             logger.info("✅ Chains created (no history)")
             logger.info("")

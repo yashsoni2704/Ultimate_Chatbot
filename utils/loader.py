@@ -15,9 +15,16 @@ RTF   → striprtf
 
 OCR pipeline (all formats)
 --------------------------
-• 2× upscale when the image is narrower than 1600 px
-• Grayscale conversion before Tesseract
+• Upscale to ≥ 2000 px wide when needed (LANCZOS)
+• Grayscale conversion
+• Denoise (cv2.fastNlMeansDenoising) to remove JPEG/scanner noise
+• Unsharp-mask sharpening to crisp up character edges
+• Adaptive Gaussian threshold → pure B&W (handles uneven lighting)
+• PIL-only fallback pipeline when OpenCV is not installed
+• Tesseract called with --oem 3 --psm 6 for best accuracy on document images
 • ThreadPoolExecutor for parallel OCR across all images on a page/slide/sheet
+  (workers reduced to 2 for Windows stability)
+• Full-page PDF fallback rendered at 300 DPI (raised from 200)
 • OCR text is **appended to the same page/slide/sheet Document** so the
   page-image relationship is preserved and everything chunks together.
 """
@@ -32,11 +39,18 @@ from datetime import datetime
 
 # ── pptx / OCR ───────────────────────────────────────────────────────────────
 from pptx import Presentation
-from PIL import Image
+from PIL import Image, ImageFilter, ImageEnhance
 import pytesseract
 pytesseract.pytesseract.tesseract_cmd = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
+
+try:
+    import cv2
+    import numpy as np
+    _CV2_AVAILABLE = True
+except ImportError:
+    _CV2_AVAILABLE = False
 
 # ── LangChain ────────────────────────────────────────────────────────────────
 from langchain_core.documents import Document
@@ -72,22 +86,98 @@ except ImportError:
 # Shared OCR helpers
 # ════════════════════════════════════════════════════════════════════════════
 
-_OCR_MIN_WIDTH = 1600   # upscale target (px)
-_OCR_WORKERS   = 4      # parallel Tesseract threads
+_OCR_MIN_WIDTH = 2000   # upscale target (px) — raised for better resolution
+_OCR_WORKERS   = 2      # parallel Tesseract threads (lower = more stable on Windows)
+
+# Tesseract config:
+#   --oem 3  → use both legacy + LSTM engine (best accuracy)
+#   --psm 6  → assume a uniform block of text (good default for documents)
+#   -c preserve_interword_spaces=1 → keep word spacing intact
+_TESS_CONFIG = "--oem 3 --psm 6 -c preserve_interword_spaces=1"
+
+
+def _preprocess_for_ocr(img: "Image.Image") -> "Image.Image":
+    """
+    Apply a series of image-quality improvements before handing off to
+    Tesseract.  The goal is clean, high-contrast black text on a white
+    background — which is what Tesseract is trained on.
+
+    Pipeline
+    --------
+    1. Convert to grayscale (L mode).
+    2. Upscale to at least _OCR_MIN_WIDTH px wide using LANCZOS.
+    3. If OpenCV is available:
+       a. Denoise (fastNlMeansDenoising) to remove speckle / compression artefacts.
+       b. Sharpen with an unsharp-mask kernel to crisp up character edges.
+       c. Adaptive threshold (Gaussian) → pure B&W — eliminates uneven lighting.
+    4. Fallback (no OpenCV): PIL unsharp mask + autocontrast + binarise via
+       a fixed threshold.
+    5. Return the processed PIL image.
+    """
+    # 1. Grayscale
+    img = img.convert("L")
+
+    # 2. Upscale if needed
+    if img.width < _OCR_MIN_WIDTH:
+        scale = _OCR_MIN_WIDTH / img.width
+        new_w = int(img.width  * scale)
+        new_h = int(img.height * scale)
+        img   = img.resize((new_w, new_h), Image.LANCZOS)
+
+    if _CV2_AVAILABLE:
+        # 3a. Convert PIL → numpy for OpenCV processing
+        arr = np.array(img, dtype=np.uint8)
+
+        # 3b. Denoise — reduces JPEG artefacts and scanner noise that confuse
+        #     Tesseract into splitting or merging characters
+        arr = cv2.fastNlMeansDenoising(arr, None, h=10, templateWindowSize=7,
+                                       searchWindowSize=21)
+
+        # 3c. Sharpen with an unsharp mask (kernel = laplacian-of-gaussian)
+        blur   = cv2.GaussianBlur(arr, (0, 0), sigmaX=3)
+        arr    = cv2.addWeighted(arr, 1.5, blur, -0.5, 0)
+
+        # 3d. Adaptive threshold → black text on white background
+        #     Block size 31 and C=10 work well for most printed documents.
+        arr = cv2.adaptiveThreshold(
+            arr, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            blockSize=31,
+            C=10,
+        )
+
+        img = Image.fromarray(arr)
+    else:
+        # Fallback: PIL-only pipeline (no OpenCV)
+        # Sharpen
+        img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+        # Autocontrast — stretch histogram so text is dark and background is white
+        import PIL.ImageOps
+        img = PIL.ImageOps.autocontrast(img, cutoff=1)
+        # Simple threshold at midpoint
+        img = img.point(lambda p: 255 if p > 128 else 0)
+
+    return img
 
 
 def _ocr_image(image_bytes: bytes, min_width: int = _OCR_MIN_WIDTH) -> str:
     """
-    Preprocess a single image (grayscale + 2× upscale when needed) and run
-    Tesseract OCR.  Returns the extracted string (may be empty).
+    Preprocess a single image and run Tesseract OCR.
+    Returns the extracted string (may be empty).
+
+    Preprocessing steps applied by _preprocess_for_ocr:
+      • Grayscale conversion
+      • Upscale to ≥ _OCR_MIN_WIDTH px (LANCZOS)
+      • Denoise + sharpen + adaptive threshold (via OpenCV when available,
+        PIL-only fallback otherwise)
+
+    Tesseract is invoked with _TESS_CONFIG to select the best engine and
+    page-segmentation mode for document images.
     """
-    img = Image.open(io.BytesIO(image_bytes)).convert("L")   # grayscale
-    if img.width < min_width:
-        scale = min_width / img.width
-        new_w = int(img.width  * scale)
-        new_h = int(img.height * scale)
-        img   = img.resize((new_w, new_h), Image.LANCZOS)
-    return pytesseract.image_to_string(img)
+    img = Image.open(io.BytesIO(image_bytes))
+    img = _preprocess_for_ocr(img)
+    return pytesseract.image_to_string(img, config=_TESS_CONFIG)
 
 
 def _ocr_images_parallel(
@@ -337,7 +427,8 @@ def _load_pdf(file_path: str) -> list:
                     # ── 4. Whole-page OCR fallback (image-only page) ──────
                     logger.info(f"  Page {i}: no text — attempting full-page OCR...")
                     try:
-                        img      = page.to_image(resolution=200).original
+                        # 300 DPI is the minimum recommended for Tesseract accuracy
+                        img      = page.to_image(resolution=300).original
                         buf      = io.BytesIO()
                         img.save(buf, format="PNG")
                         ocr_text = _ocr_image(buf.getvalue()).strip()
