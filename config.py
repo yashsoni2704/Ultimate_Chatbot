@@ -153,13 +153,25 @@ class Config:
 
 
     # ==============================
-    # LLM (Ollama)
+    # LLM provider selection
+    # "ollama"  → local Ollama (default)
+    # "google"  → Google Gemini via API key
     # ==============================
 
+    # Primary LLM (default)
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+
+    # Ollama model (used when LLM_PROVIDER=ollama)
     LLM_MODEL = os.getenv(
         "LLM_MODEL",
         "llama3.1:latest"
     )
+
+    # Google Gemini model (used when LLM_PROVIDER=google)
+    GOOGLE_LLM_MODEL = os.getenv(
+        "GOOGLE_LLM_MODEL",
+        "gemini-2.0-flash"
+    ).strip()
 
     LLM_TEMPERATURE = float(
         os.getenv(
@@ -167,6 +179,15 @@ class Config:
             "0.2"
         )
     )
+
+    # Secondary LLM (fallback when user is unsatisfied)
+    SECONDARY_LLM_PROVIDER = os.getenv("SECONDARY_LLM_PROVIDER", "ollama").strip().lower()
+    SECONDARY_LLM_MODEL = os.getenv("SECONDARY_LLM_MODEL", "mistral:7b").strip()
+    SECONDARY_LLM_TEMPERATURE = float(os.getenv("SECONDARY_LLM_TEMPERATURE", "0.2"))
+
+    # Satisfaction check settings
+    SATISFACTION_CHECK_INTERVAL = int(os.getenv("SATISFACTION_CHECK_INTERVAL", "3"))
+    SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "yashrakeshsoni@gmail.com").strip()
 
 
     # ==============================

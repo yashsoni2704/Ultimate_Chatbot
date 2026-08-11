@@ -615,10 +615,10 @@ modalConfirm.addEventListener("click", async () => {
         });
         const data = await res.json();
         if (data.status === "success") {
-            _showGlobalToast(`🗑️ ${data.message}`, "success");
+            _showGlobalToast(` ${data.message}`, "success");
             loadKnowledgeBase();
         } else if (res.status === 409) {
-            _showGlobalToast(`🔒 ${data.message}`, "error");
+            _showGlobalToast(` ${data.message}`, "error");
         } else {
             _showGlobalToast(`❌ ${data.message}`, "error");
         }
@@ -821,12 +821,13 @@ function hideScrapeStatus()              { scrapeStatus.style.display = "none"; 
 //  SECTION NAVIGATION
 // ════════════════════════════════════════════════════════════════════════════
 
-const SECTIONS = ["kb", "chats", "visitors", "bookings", "stt"];
+const SECTIONS = ["kb", "chats", "visitors", "bookings", "dissat", "stt"];
 const PAGE_TITLES = {
     kb:       ["Knowledge Base Manager",    "Upload documents and URLs to expand what the chatbot knows"],
     chats:    ["Chat Logs",                 "All conversations recorded from users"],
     visitors: ["Visitors",                  "IP, geo, browser and device data for every visitor"],
     bookings: ["Bookings",                  "Test-drive and service slot bookings"],
+    dissat:   ["Feedback Issues",        "Users who disliked answers — manage, resolve, or view their chat history"],
     stt:      ["STT Settings",              "Switch the Speech-to-Text provider used for voice input"],
 };
 
@@ -852,6 +853,7 @@ function showSection(name) {
     if (name === "visitors") loadVisitors();
     if (name === "bookings") loadBookings();
     if (name === "stt")      loadSttSettings();
+    if (name === "dissat")   loadDissatisfied();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1211,3 +1213,377 @@ window.addEventListener("load", () => {
     startAdminKbPolling();
     showSection("kb");
 });
+
+
+// ════════════════════════════════════════════════════════════════════════════
+//  DISSATISFIED USERS SECTION
+// ════════════════════════════════════════════════════════════════════════════
+
+let _dissatPage        = 1;
+let _dissatStatusFilter = "";
+let _dissatCurrentRecordId  = null;
+let _dissatCurrentVisitorId = null;
+
+// ── DOM refs ────────────────────────────────────────────────────────────────
+const dissatLoading    = document.getElementById("dissatLoading");
+const dissatEmpty      = document.getElementById("dissatEmpty");
+const dissatTableWrap  = document.getElementById("dissatTableWrap");
+const dissatTableBody  = document.getElementById("dissatTableBody");
+const dissatPagination = document.getElementById("dissatPagination");
+const dissatPageInfo   = document.getElementById("dissatPageInfo");
+const prevDissatBtn    = document.getElementById("prevDissatPageBtn");
+const nextDissatBtn    = document.getElementById("nextDissatPageBtn");
+const refreshDissatBtn = document.getElementById("refreshDissatBtn");
+const dissatNavBadge   = document.getElementById("dissatNavBadge");
+
+if (refreshDissatBtn) refreshDissatBtn.addEventListener("click", () => loadDissatisfied(true));
+if (prevDissatBtn)    prevDissatBtn.addEventListener("click",    () => { _dissatPage--; loadDissatisfied(); });
+if (nextDissatBtn)    nextDissatBtn.addEventListener("click",    () => { _dissatPage++; loadDissatisfied(); });
+
+// ── Filter dropdown ──────────────────────────────────────────────────────────
+function onDissatFilterChange(select) {
+    _dissatStatusFilter = select.value;
+    _dissatPage = 1;
+    loadDissatisfied();
+}
+
+// Keep old filterDissatTab as no-op for safety
+function filterDissatTab() {}
+
+// ── Load list ────────────────────────────────────────────────────────────────
+async function loadDissatisfied(forceRefresh = false) {
+    if (!dissatLoading) return;
+    dissatLoading.style.display    = "flex";
+    dissatEmpty.style.display      = "none";
+    dissatTableWrap.style.display  = "none";
+    dissatPagination.style.display = "none";
+
+    try {
+        const qs  = new URLSearchParams({
+            page:     _dissatPage,
+            per_page: 20,
+            ..._dissatStatusFilter ? { status: _dissatStatusFilter } : {},
+        });
+        const res  = await fetch(`${API}/admin/api/dissatisfied-users?${qs}`, { credentials: "include" });
+        const data = await res.json();
+
+        dissatLoading.style.display = "none";
+
+        if (data.status !== "success") {
+            _showGlobalToast("❌ Failed to load dissatisfied users", "error");
+            return;
+        }
+
+        // Update count badges
+        const c = data.counts || {};
+        _setCount("dissatCountAll",      "Total",    c.total    ?? 0);
+        _setCount("dissatCountOpen",     "Open",     c.open     ?? 0);
+        _setCount("dissatCountSolved",   "Solved",   c.solved   ?? 0);
+        _setCount("dissatCountRejected", "Rejected", c.rejected ?? 0);
+
+        // Update nav badge (open count)
+        if (dissatNavBadge) {
+            const openCount = c.open ?? 0;
+            dissatNavBadge.textContent    = openCount;
+            dissatNavBadge.style.display  = openCount > 0 ? "inline" : "none";
+        }
+
+        if (!data.users || data.users.length === 0) {
+            dissatEmpty.style.display = "flex";
+            return;
+        }
+
+        // Render rows
+        dissatTableBody.innerHTML = "";
+        data.users.forEach(u => dissatTableBody.appendChild(_renderDissatRow(u)));
+        dissatTableWrap.style.display = "block";
+
+        // Pagination
+        if (data.pages > 1) {
+            dissatPageInfo.textContent     = `Page ${data.page} of ${data.pages}`;
+            prevDissatBtn.disabled         = data.page <= 1;
+            nextDissatBtn.disabled         = data.page >= data.pages;
+            dissatPagination.style.display = "flex";
+        }
+
+    } catch (err) {
+        dissatLoading.style.display = "none";
+        _showGlobalToast("❌ Network error loading dissatisfied users", "error");
+    }
+}
+
+function _setCount(id, label, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = `${label}: ${val}`;
+}
+
+// ── Render a single table row ─────────────────────────────────────────────────
+function _renderDissatRow(u) {
+    const tr = document.createElement("tr");
+
+    const info     = u.user_info || {};
+    const nameText = info.name  ? escAdminHtml(info.name)  : "—";
+    const emailTxt = info.email ? `<br><span style="font-size:11px;color:#64748b;">${escAdminHtml(info.email)}</span>` : "";
+
+    const statusMap = {
+        open:     '<span class="dissat-badge open">Open</span>',
+        solved:   '<span class="dissat-badge solved">Solved</span>',
+        rejected: '<span class="dissat-badge rejected">Rejected</span>',
+    };
+    const badge    = statusMap[u.status] || statusMap.open;
+    const shortId  = (u.visitor_id || "").substring(0, 16) + "…";
+    const created  = _fmtAdminDate(u.created_at);
+    const updated  = _fmtAdminDate(u.updated_at);
+
+    const isClosed = u.status === "solved" || u.status === "rejected";
+
+    tr.innerHTML = `
+        <td>
+            <span class="visitor-id-link" title="${escAdminHtml(u.visitor_id)}"
+                  onclick="openChatViewer('${escAdminHtml(u.visitor_id)}', '${escAdminHtml(u.id)}', '${escAdminHtml(u.status)}')">
+                ${escAdminHtml(shortId)}
+            </span>
+        </td>
+        <td>${nameText}${emailTxt}</td>
+        <td><span class="dislike-chip">${u.dislike_count || 0} dislikes</span></td>
+        <td>${badge}</td>
+        <td style="font-size:12px;color:#64748b;">${created}</td>
+        <td style="font-size:12px;color:#64748b;">${updated}</td>
+        <td>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="dissat-action-btn view"
+                    onclick="openChatViewer('${escAdminHtml(u.visitor_id)}', '${escAdminHtml(u.id)}', '${escAdminHtml(u.status)}')">
+                    View
+                </button>
+                ${!isClosed ? `
+                <button class="dissat-action-btn solve"
+                    onclick="updateDissatStatus('${escAdminHtml(u.id)}', 'solved', this)">
+                    Solved
+                </button>
+                <button class="dissat-action-btn reject"
+                    onclick="updateDissatStatus('${escAdminHtml(u.id)}', 'rejected', this)">
+                    Rejected
+                </button>` : `
+                <button class="dissat-action-btn view"
+                    onclick="updateDissatStatus('${escAdminHtml(u.id)}', 'open', this)">
+                    Re-open
+                </button>`}
+            </div>
+        </td>`;
+    return tr;
+}
+
+// ── Update status from table row ─────────────────────────────────────────────
+async function updateDissatStatus(recordId, status, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        const res  = await fetch(`${API}/admin/api/dissatisfied-users/${recordId}/status`, {
+            method:      "POST",
+            headers:     { "Content-Type": "application/json" },
+            credentials: "include",
+            body:        JSON.stringify({ status }),
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            _showGlobalToast(`Marked as ${status}`, "success");
+            loadDissatisfied();
+            // Also refresh viewer if it's open for this record
+            if (_dissatCurrentRecordId === recordId) {
+                _updateCvStatusUI(status);
+            }
+        } else {
+            _showGlobalToast((data.message || "Update failed"), "error");
+        }
+    } catch (e) {
+        _showGlobalToast("❌ Network error", "error");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  CHAT VIEWER — slide-in panel
+// ════════════════════════════════════════════════════════════════════════════
+
+const chatViewerOverlay = document.getElementById("chatViewerOverlay");
+const chatViewerClose   = document.getElementById("chatViewerClose");
+const cvTitle           = document.getElementById("cvTitle");
+const cvMeta            = document.getElementById("cvMeta");
+const cvBody            = document.getElementById("cvBody");
+const cvLoading         = document.getElementById("cvLoading");
+const cvSolveBtn        = document.getElementById("cvSolveBtn");
+const cvRejectBtn       = document.getElementById("cvRejectBtn");
+const cvReopenBtn       = document.getElementById("cvReopenBtn");
+const cvStatusBadgeWrap = document.getElementById("cvStatusBadgeWrap");
+
+if (chatViewerClose)   chatViewerClose.addEventListener("click", closeChatViewer);
+if (chatViewerOverlay) chatViewerOverlay.addEventListener("click", e => {
+    if (e.target === chatViewerOverlay) closeChatViewer();
+});
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && chatViewerOverlay?.classList.contains("visible")) closeChatViewer();
+});
+
+if (cvSolveBtn)  cvSolveBtn.addEventListener("click",  () => updateDissatStatus(_dissatCurrentRecordId, "solved",   cvSolveBtn));
+if (cvRejectBtn) cvRejectBtn.addEventListener("click",  () => updateDissatStatus(_dissatCurrentRecordId, "rejected", cvRejectBtn));
+if (cvReopenBtn) cvReopenBtn.addEventListener("click",  () => updateDissatStatus(_dissatCurrentRecordId, "open",     cvReopenBtn));
+async function openChatViewer(visitorId, recordId, currentStatus) {
+    _dissatCurrentVisitorId = visitorId;
+    _dissatCurrentRecordId  = recordId;
+
+    // Open panel
+    chatViewerOverlay.classList.add("visible");
+    cvBody.innerHTML = "";
+    const loadingDiv = document.createElement("div");
+    loadingDiv.className = "cv-loading";
+    loadingDiv.id = "cvLoadingInner";
+    loadingDiv.innerHTML = `<div class="kb-spinner"></div><span>Loading conversation…</span>`;
+    cvBody.appendChild(loadingDiv);
+
+    cvTitle.textContent = "Loading…";
+    cvMeta.innerHTML    = "";
+    _updateCvStatusUI(currentStatus);
+
+    try {
+        const res  = await fetch(`${API}/admin/api/visitor-chat-history/${encodeURIComponent(visitorId)}`, {
+            credentials: "include",
+        });
+        const data = await res.json();
+
+        loadingDiv.remove();
+
+        if (data.status !== "success") {
+            cvBody.innerHTML = `<div class="cv-empty"><p>Failed to load chat history.</p></div>`;
+            return;
+        }
+
+        // Header
+        const v   = data.visitor || {};
+        const dis = data.dis_record || {};
+        const info = dis.user_info || {};
+
+        cvTitle.textContent = info.name
+            ? `${info.name}'s Chat History`
+            : `Visitor: ${visitorId.substring(0, 20)}…`;
+
+        // Meta chips
+        const chips = [];
+        if (info.email) chips.push({ icon: "",   text: info.email });
+        if (info.phone) chips.push({ icon: "",   text: info.phone });
+        chips.push({ icon: "", text: `${data.total_messages} messages` });
+        chips.push({ icon: "", text: `${dis.dislike_count || 0} dislikes` });
+        if (v.country)  chips.push({ icon: "", text: v.country });
+        if (v.browser)  chips.push({ icon: "", text: v.browser });
+
+        cvMeta.innerHTML = chips.map(c =>
+            `<span class="chat-viewer-meta-chip">${escAdminHtml((c.icon + " " + c.text).trim())}</span>`
+        ).join("");
+
+        // Render conversation turns
+        if (!data.history || data.history.length === 0) {
+            cvBody.innerHTML = `<div class="cv-empty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <p>No chat history found for this visitor.</p>
+            </div>`;
+            return;
+        }
+
+        data.history.forEach((turn, i) => {
+            const turnEl = document.createElement("div");
+            turnEl.className = "cv-turn";
+
+            const ts = _fmtAdminDate(turn.created_at);
+            const fbClass  = turn.feedback === "dislike" ? "cv-disliked"
+                           : turn.feedback === "like"    ? "cv-liked" : "";
+            const fbPill   = turn.feedback === "dislike"
+                ? `<div class="cv-feedback-pill disliked">User marked this response as not helpful</div>`
+                : turn.feedback === "like"
+                ? `<div class="cv-feedback-pill liked">User marked this response as helpful</div>`
+                : "";
+
+            turnEl.innerHTML = `
+                <div class="cv-turn-number">Turn ${i + 1}</div>
+                <div class="cv-ts">${ts}</div>
+                <div class="cv-user">${escAdminHtml(turn.query || "")}</div>
+                <div class="cv-bot ${fbClass}">
+                    ${_renderCvAnswer(turn.answer || "")}
+                    ${fbPill}
+                </div>`;
+            cvBody.appendChild(turnEl);
+        });
+
+        // Scroll to first disliked message if any
+        setTimeout(() => {
+            const firstDisliked = cvBody.querySelector(".cv-disliked");
+            if (firstDisliked) firstDisliked.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 200);
+
+    } catch (err) {
+        cvBody.innerHTML = `<div class="cv-empty"><p>Network error: ${escAdminHtml(err.message)}</p></div>`;
+    }
+}
+
+function closeChatViewer() {
+    chatViewerOverlay?.classList.remove("visible");
+    _dissatCurrentVisitorId = null;
+    _dissatCurrentRecordId  = null;
+}
+
+function _updateCvStatusUI(status) {
+    if (!cvSolveBtn || !cvRejectBtn || !cvReopenBtn) return;
+    const isClosed = status === "solved" || status === "rejected";
+    cvSolveBtn.style.display  = isClosed ? "none" : "inline-flex";
+    cvRejectBtn.style.display = isClosed ? "none" : "inline-flex";
+    cvReopenBtn.style.display = isClosed ? "inline-flex" : "none";
+
+    const statusMap = {
+        open:     '<span class="dissat-badge open">Open</span>',
+        solved:   '<span class="dissat-badge solved">Solved</span>',
+        rejected: '<span class="dissat-badge rejected">Rejected</span>',
+    };
+    if (cvStatusBadgeWrap) cvStatusBadgeWrap.innerHTML = statusMap[status] || "";
+}
+
+// Render answer — simple markdown-lite for the viewer (tables + line breaks)
+function _renderCvAnswer(raw) {
+    if (!raw) return "";
+    let html = escAdminHtml(raw);
+    // Restore line breaks
+    html = html.replace(/\n/g, "<br>");
+    return html;
+}
+
+function escAdminHtml(str) {
+    return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+function _fmtAdminDate(raw) {
+    if (!raw) return "—";
+    try {
+        const d = new Date(String(raw).replace(" ", "T") + (raw.includes("Z") ? "" : "Z"));
+        if (isNaN(d.getTime())) return raw;
+        return d.toLocaleString(undefined, {
+            month: "short", day: "numeric", year: "numeric",
+            hour: "2-digit", minute: "2-digit",
+        });
+    } catch { return raw; }
+}
+
+// ── Auto-load open count on page load (for nav badge) ────────────────────────
+(async function _initDissatBadge() {
+    try {
+        const res  = await fetch(`${API}/admin/api/dissatisfied-users?status=open&per_page=1`, { credentials: "include" });
+        const data = await res.json();
+        if (data.status === "success" && dissatNavBadge) {
+            const count = data.counts?.open ?? data.total ?? 0;
+            dissatNavBadge.textContent   = count;
+            dissatNavBadge.style.display = count > 0 ? "inline" : "none";
+        }
+    } catch (_) {}
+}());

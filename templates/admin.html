@@ -66,11 +66,12 @@
             <div class="nav-section">
                 <p class="section-label">Navigation</p>
                 <ul class="nav-list">
-                    <li><a class="nav-link active" href="#kb"      onclick="showSection('kb')">📚 Knowledge Base</a></li>
-                    <li><a class="nav-link"         href="#chats"   onclick="showSection('chats')">💬 Chat Logs</a></li>
-                    <li><a class="nav-link"         href="#visitors" onclick="showSection('visitors')">👤 Visitors</a></li>
-                    <li><a class="nav-link"         href="#bookings" onclick="showSection('bookings')">📅 Bookings</a></li>
-                    <li><a class="nav-link"         href="#stt"      onclick="showSection('stt')">🎙 STT Settings</a></li>
+                    <li><a class="nav-link active" href="#kb"        onclick="showSection('kb')">Knowledge Base</a></li>
+                    <li><a class="nav-link"         href="#chats"     onclick="showSection('chats')">Chat Logs</a></li>
+                    <li><a class="nav-link"         href="#visitors"  onclick="showSection('visitors')">Visitors</a></li>
+                    <li><a class="nav-link"         href="#bookings"  onclick="showSection('bookings')">Bookings</a></li>
+                    <li><a class="nav-link"         href="#dissat"    onclick="showSection('dissat')">Feedback Issues <span id="dissatNavBadge" style="display:none;background:#ef4444;color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 7px;margin-left:4px;"></span></a></li>
+                    <li><a class="nav-link"         href="#stt"       onclick="showSection('stt')">STT Settings</a></li>
                 </ul>
             </div>
 
@@ -405,6 +406,78 @@
             </div><!-- /section-bookings -->
 
             <!-- ════════════════════════════════
+                 SECTION: DISSATISFIED USERS
+            ════════════════════════════════ -->
+            <div id="section-dissat" style="display:none;">
+                <section class="kb-section">
+                    <div class="kb-section-header">
+                        <h3>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                                <circle cx="9" cy="7" r="4"/>
+                                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                            </svg>
+                            Feedback Issues
+                        </h3>
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <select id="dissatStatusSelect" class="kb-select" onchange="onDissatFilterChange(this)">
+                                <option value="">All</option>
+                                <option value="open">Open</option>
+                                <option value="solved">Solved</option>
+                                <option value="rejected">Rejected</option>
+                            </select>
+                            <button class="refresh-btn" id="refreshDissatBtn" title="Refresh">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"/>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                                </svg>
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Count summary row -->
+                    <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
+                        <span id="dissatCountAll"      class="dissat-badge" style="background:rgba(99,102,241,0.1);color:#4f46e5;border-color:rgba(99,102,241,0.25);">Total: 0</span>
+                        <span id="dissatCountOpen"     class="dissat-badge open">Open: 0</span>
+                        <span id="dissatCountSolved"   class="dissat-badge solved">Solved: 0</span>
+                        <span id="dissatCountRejected" class="dissat-badge rejected">Rejected: 0</span>
+                    </div>
+
+                    <div id="dissatLoading" class="kb-loading"><div class="kb-spinner"></div><span>Loading…</span></div>
+                    <div id="dissatEmpty" class="kb-empty" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        <p>No feedback issues found.</p>
+                    </div>
+                    <div id="dissatTableWrap" class="kb-table-wrap" style="display:none;">
+                        <table class="kb-table">
+                            <thead>
+                                <tr>
+                                    <th>Visitor ID</th>
+                                    <th>Name / Email</th>
+                                    <th>Dislikes</th>
+                                    <th>Status</th>
+                                    <th>First Seen</th>
+                                    <th>Last Updated</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dissatTableBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="dissatPagination" class="pagination-controls" style="display:none;">
+                        <button id="prevDissatPageBtn" class="pagination-button" type="button">Previous</button>
+                        <span id="dissatPageInfo" class="pagination-info">Page 1 of 1</span>
+                        <button id="nextDissatPageBtn" class="pagination-button" type="button">Next</button>
+                    </div>
+                </section>
+            </div><!-- /section-dissat -->
+
+            <!-- ════════════════════════════════
                  SECTION: STT SETTINGS
             ════════════════════════════════ -->
             <div id="section-stt" style="display:none;">
@@ -495,6 +568,45 @@
                 <button class="modal-cancel" id="modalCancel">Cancel</button>
                 <button class="modal-confirm" id="modalConfirm">Remove</button>
             </div>
+        </div>
+    </div>
+
+    <!-- ════════════════════════════════════
+         CHAT VIEWER — slide-in panel
+    ════════════════════════════════════ -->
+    <div id="chatViewerOverlay" class="chat-viewer-overlay" role="dialog" aria-modal="true">
+        <div class="chat-viewer-panel" id="chatViewerPanel">
+
+            <!-- Header -->
+            <div class="chat-viewer-header">
+                <div class="chat-viewer-header-left">
+                    <div class="chat-viewer-title" id="cvTitle">Visitor Chat History</div>
+                    <div class="chat-viewer-meta" id="cvMeta"></div>
+                </div>
+                <button class="chat-viewer-close" id="chatViewerClose" aria-label="Close panel">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Status action bar -->
+            <div class="chat-viewer-actions" id="cvActions">
+                <span class="chat-viewer-action-label">Mark as:</span>
+                <button class="dissat-action-btn solve"  id="cvSolveBtn">Mark Solved</button>
+                <button class="dissat-action-btn reject" id="cvRejectBtn">Mark Rejected</button>
+                <button class="dissat-action-btn view"   id="cvReopenBtn" style="display:none;">Re-open</button>
+                <span id="cvStatusBadgeWrap" style="margin-left:auto;"></span>
+            </div>
+
+            <!-- Conversation body -->
+            <div class="chat-viewer-body" id="cvBody">
+                <div class="cv-loading" id="cvLoading">
+                    <div class="kb-spinner"></div>
+                    <span>Loading conversation…</span>
+                </div>
+            </div>
+
         </div>
     </div>
 

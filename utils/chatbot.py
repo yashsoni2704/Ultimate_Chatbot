@@ -31,7 +31,8 @@ else:
 # =====================================
 
 _embeddings = None
-_llm        = None
+_llm_primary    = None
+_llm_secondary  = None
 _reranker   = None
 _prompt_no_history   = None
 _prompt_with_history = None
@@ -95,17 +96,58 @@ def _rerank(question: str, docs_with_scores: list) -> list:
     return [doc for _, (doc, _) in top_n]
 
 
-def _get_llm():
-    global _llm
-    if _llm is None:
-        from langchain_ollama import ChatOllama
-        logger.info(f"Initializing LLM: {Config.LLM_MODEL}")
-        _llm = ChatOllama(
-            model=Config.LLM_MODEL,
-            temperature=Config.LLM_TEMPERATURE,
-        )
-        logger.info("✅ LLM ready")
-    return _llm
+def _get_llm(mode="primary"):
+    """
+    Get LLM instance based on mode.
+    
+    Args:
+        mode: "primary" or "secondary"
+    
+    Returns:
+        LLM instance (ChatOllama or ChatGoogleGenerativeAI)
+    """
+    global _llm_primary, _llm_secondary
+    
+    if mode == "secondary":
+        if _llm_secondary is None:
+            provider = Config.SECONDARY_LLM_PROVIDER
+            if provider == "google":
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                logger.info(f"Initializing Secondary LLM: Google Gemini ({Config.GOOGLE_LLM_MODEL})")
+                _llm_secondary = ChatGoogleGenerativeAI(
+                    model=Config.GOOGLE_LLM_MODEL,
+                    temperature=Config.SECONDARY_LLM_TEMPERATURE,
+                    google_api_key=Config.GOOGLE_API_KEY,
+                )
+            else:
+                from langchain_ollama import ChatOllama
+                logger.info(f"Initializing Secondary LLM: Ollama ({Config.SECONDARY_LLM_MODEL})")
+                _llm_secondary = ChatOllama(
+                    model=Config.SECONDARY_LLM_MODEL,
+                    temperature=Config.SECONDARY_LLM_TEMPERATURE,
+                )
+            logger.info(f"✅ Secondary LLM ready ({provider})")
+        return _llm_secondary
+    else:
+        if _llm_primary is None:
+            provider = Config.LLM_PROVIDER
+            if provider == "google":
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                logger.info(f"Initializing Primary LLM: Google Gemini ({Config.GOOGLE_LLM_MODEL})")
+                _llm_primary = ChatGoogleGenerativeAI(
+                    model=Config.GOOGLE_LLM_MODEL,
+                    temperature=Config.LLM_TEMPERATURE,
+                    google_api_key=Config.GOOGLE_API_KEY,
+                )
+            else:
+                from langchain_ollama import ChatOllama
+                logger.info(f"Initializing Primary LLM: Ollama ({Config.LLM_MODEL})")
+                _llm_primary = ChatOllama(
+                    model=Config.LLM_MODEL,
+                    temperature=Config.LLM_TEMPERATURE,
+                )
+            logger.info(f"✅ Primary LLM ready ({provider})")
+        return _llm_primary
 
 
 def _get_prompts():
@@ -134,15 +176,32 @@ TONE AND FORMAT FOR NORMAL ANSWERS:
 Write in plain, natural sentences. Match the format to the question — use flowing prose for explanations and opinions, and use a simple list only when the answer is genuinely enumerable (e.g. "what features does X have?"). Never use bold text, headers, or nested structure. Never mention page numbers, section names, or document structure. If the context does not contain enough information to fully answer, share what is available and note what is missing — do not refuse entirely unless the context has nothing relevant at all.
 
 COMPARISON QUESTIONS — TABLE FORMAT:
-When the user asks to compare, contrast, or evaluate two or more things side by side — including phrasings like "compare X and Y", "X vs Y", "X or Y", "difference between X and Y", "which is better", "how does X compare to Y", "tell me about both X and Y", or any question asking about the same attribute across multiple items — respond with one or more Markdown tables.
+When the user asks to compare, contrast, or evaluate two or more things side by side — including phrasings like "compare X and Y", "X vs Y", "X or Y", "difference between X and Y", "which is better", "how does X compare to Y", "tell me about both X and Y", or any question asking about the same attribute across multiple items — follow these four steps exactly.
 
-How many tables to use is your decision based on the question and the available data. Use one table when all attributes fit cleanly together. Use multiple tables when grouping by category (e.g. one table for engine specs, another for pricing) makes the answer clearer. The goal is clarity, not a fixed number.
+STEP 1 — EXTRACT ATTRIBUTES:
+From the context, identify all attributes mentioned for each item being compared. Do NOT invent, assume, or infer any values. Only use what is explicitly stated in the context.
 
-Table rules:
-- One column per item being compared, one row per attribute or feature
-- Fill cells using only information from the context; use "-" for any value not present in the context
-- If an entire column would be all "-" entries, exclude that item from the table and add a note below: "I don't have enough information about [item] to include it in the comparison."
-- After the table(s), add 2–3 sentences in plain language summarising the key differences
+STEP 2 — BUILD THE COMPARISON TABLE:
+Create a single Markdown table with these strict rules:
+- Include a row for an attribute ONLY if BOTH items have a clear value for it in the context. If either item is missing the data for that attribute, skip the entire row — no dashes, no blanks, no "N/A", no placeholders of any kind.
+- One column per item being compared, one row per qualifying attribute.
+- Use the exact values from the context — do not paraphrase numbers or specifications.
+- Every cell in the table must contain a real value. A table cell must never be empty or contain a placeholder.
+
+STEP 3 — SIMILARITIES (below the table):
+After the table, write 2–3 sentences describing attributes or features that are similar or comparable across the items — for example, the same category of feature, same technology, or same purpose. Only mention similarities that are directly supported by the context.
+
+STEP 4 — UNIQUE FEATURES (below similarities):
+List features or attributes that belong to only one item and are not mentioned at all for the other item in the context. Use this format:
+  [Item A] only: bullet list of unique features
+  [Item B] only: bullet list of unique features
+Omit this section entirely if no unique features are found in the context.
+
+IMPORTANT RULES FOR COMPARISONS:
+- Never leave any table cell empty or use "-", "–", "N/A", or any filler.
+- If a row cannot be fully populated with real data for all items, that row must not appear in the table at all.
+- Unique features and similarities must always appear below the table, never inside it.
+- Do not fabricate or assume any value. If the context does not explicitly state it, do not include it.
 
 For all other questions, answer in natural sentences without tables.
 """
@@ -232,7 +291,7 @@ def _format_history(history: list) -> str:
 # Ask Question
 # =====================================
 
-def get_answer(question: str, history: list = None, metadata: dict = None) -> str:
+def get_answer(question: str, history: list = None, metadata: dict = None, llm_mode: str = "primary") -> str:
     """
     question : current user question
     history  : list of past turns [{"question": ..., "answer": ...}]
@@ -359,7 +418,7 @@ def get_answer(question: str, history: list = None, metadata: dict = None) -> st
         from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
         prompt_no_hist, prompt_with_hist = _get_prompts()
-        llm = _get_llm()
+        llm = _get_llm(mode=llm_mode)  # Use the specified LLM mode
 
         # ── Choose prompt & build chain ────────────────────────
         if Config.CONVERSATION_HISTORY and history:

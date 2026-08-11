@@ -83,6 +83,19 @@ def ensure_indexes() -> None:
         _col("otp_codes").create_index([("email", ASCENDING)])
         _col("otp_codes").create_index([("expires_at", ASCENDING)])
 
+        # chat_feedback
+        _col("chat_feedback").create_index([("id", ASCENDING)], unique=True)
+        _col("chat_feedback").create_index([("visitor_id", ASCENDING)])
+        _col("chat_feedback").create_index([("chat_log_id", ASCENDING)])
+        _col("chat_feedback").create_index([("feedback", ASCENDING)])
+        _col("chat_feedback").create_index([("created_at", DESCENDING)])
+
+        # dissatisfied_users
+        _col("dissatisfied_users").create_index([("id", ASCENDING)], unique=True)
+        _col("dissatisfied_users").create_index([("visitor_id", ASCENDING)], unique=True)
+        _col("dissatisfied_users").create_index([("status", ASCENDING)])
+        _col("dissatisfied_users").create_index([("created_at", DESCENDING)])
+
         logger.info(" MongoDB indexes ensured")
     except Exception as exc:
         logger.error(f" Index creation failed: {exc}")
@@ -306,6 +319,11 @@ def create_session(visitor_id: str = "", user_id: str = "") -> str:
         "is_active":    1,
         "created_at":   _now(),
         "ended_at":     None,
+        # Satisfaction tracking fields
+        "llm_mode":     "primary",  # "primary" | "secondary"
+        "question_count": 0,
+        "last_satisfaction_asked": 0,
+        "user_info":    None,  # {"name": "", "email": "", "phone": ""}
     }
     _col("chat_sessions").insert_one(doc)
     return session_id
@@ -331,6 +349,60 @@ def update_session_context(session_id: str, context_json: str) -> None:
         {"id": session_id},
         {"$set": {"context_json": context_json}},
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SESSION SATISFACTION TRACKING
+# ════════════════════════════════════════════════════════════════════════════
+
+def increment_session_question_count(session_id: str) -> dict:
+    """Increment question count and return updated session."""
+    _col("chat_sessions").update_one(
+        {"id": session_id},
+        {"$inc": {"question_count": 1}},
+    )
+    return _col("chat_sessions").find_one({"id": session_id}, {"_id": 0})
+
+
+def update_session_llm_mode(session_id: str, mode: str) -> None:
+    """Switch LLM mode for this session. mode = 'primary' | 'secondary'."""
+    _col("chat_sessions").update_one(
+        {"id": session_id},
+        {"$set": {
+            "llm_mode": mode,
+            "last_satisfaction_asked": 0,  # reset counter after switch
+        }},
+    )
+
+
+def mark_satisfaction_asked(session_id: str, question_count: int) -> None:
+    """Record the question count at which satisfaction was last asked."""
+    _col("chat_sessions").update_one(
+        {"id": session_id},
+        {"$set": {"last_satisfaction_asked": question_count}},
+    )
+
+
+def save_session_user_info(session_id: str, name: str, email: str, phone: str) -> None:
+    """Save contact form data to the session."""
+    _col("chat_sessions").update_one(
+        {"id": session_id},
+        {"$set": {
+            "user_info": {
+                "name":  name,
+                "email": email,
+                "phone": phone,
+            }
+        }},
+    )
+
+
+def get_session_user_info(session_id: str) -> dict | None:
+    """Return user_info dict if already filled, else None."""
+    doc = _col("chat_sessions").find_one({"id": session_id}, {"_id": 0, "user_info": 1})
+    if doc:
+        return doc.get("user_info")
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -391,3 +463,183 @@ def get_otp(email: str, purpose: str = "login_2fa") -> dict | None:
 
 def mark_otp_used(otp_id: str) -> None:
     _col("otp_codes").update_one({"id": otp_id}, {"$set": {"used": 1}})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CHAT FEEDBACK  (like / dislike per message)
+# ════════════════════════════════════════════════════════════════════════════
+
+def save_chat_feedback(
+    visitor_id:  str,
+    session_id:  str,
+    chat_log_id: str,
+    feedback:    str,   # "like" | "dislike"
+    question:    str = "",
+    answer:      str = "",
+) -> str:
+    """
+    Upsert feedback for a specific chat message.
+    A visitor can change like→dislike or vice versa — only one record per
+    (visitor_id, chat_log_id) pair is kept.
+    Returns the feedback document id.
+    """
+    now = _now()
+    col = _col("chat_feedback")
+
+    existing = col.find_one({"visitor_id": visitor_id, "chat_log_id": chat_log_id})
+    if existing:
+        col.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"feedback": feedback, "updated_at": now}},
+        )
+        return existing["id"]
+
+    doc_id = _new_id()
+    col.insert_one({
+        "id":          doc_id,
+        "visitor_id":  visitor_id,
+        "session_id":  session_id,
+        "chat_log_id": chat_log_id,
+        "feedback":    feedback,
+        "question":    question,
+        "answer":      answer,
+        "created_at":  now,
+        "updated_at":  now,
+    })
+    return doc_id
+
+
+def get_session_dislike_count(visitor_id: str, session_id: str) -> int:
+    """Return how many dislikes this visitor has given in the current session."""
+    return _col("chat_feedback").count_documents({
+        "visitor_id": visitor_id,
+        "session_id": session_id,
+        "feedback":   "dislike",
+    })
+
+
+def get_visitor_total_dislike_count(visitor_id: str) -> int:
+    """Return lifetime dislike count for a visitor (across all sessions)."""
+    return _col("chat_feedback").count_documents({
+        "visitor_id": visitor_id,
+        "feedback":   "dislike",
+    })
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# DISSATISFIED USERS
+# ════════════════════════════════════════════════════════════════════════════
+
+def upsert_dissatisfied_user(
+    visitor_id: str,
+    session_id: str,
+    dislike_count: int,
+    user_info: dict | None = None,
+) -> dict:
+    """
+    Insert or update a dissatisfied user record.
+    Status stays 'open' unless admin explicitly changes it.
+    Returns the full document.
+    """
+    now = _now()
+    col = _col("dissatisfied_users")
+    existing = col.find_one({"visitor_id": visitor_id})
+
+    if existing:
+        update: dict = {
+            "dislike_count": dislike_count,
+            "updated_at":    now,
+        }
+        # Only overwrite session_id if it changed (new session = new activity)
+        if session_id and session_id != existing.get("session_id"):
+            update["session_id"] = session_id
+            update["status"] = "open"  # re-open if they're back complaining
+        if user_info:
+            update["user_info"] = user_info
+        col.update_one({"visitor_id": visitor_id}, {"$set": update})
+        return col.find_one({"visitor_id": visitor_id}, {"_id": 0})
+
+    doc = {
+        "id":            _new_id(),
+        "visitor_id":    visitor_id,
+        "session_id":    session_id,
+        "dislike_count": dislike_count,
+        "status":        "open",   # "open" | "solved" | "rejected"
+        "user_info":     user_info,
+        "admin_notes":   "",
+        "created_at":    now,
+        "updated_at":    now,
+        "resolved_at":   None,
+    }
+    col.insert_one(doc)
+    logger.info(f"  New dissatisfied user: {visitor_id}")
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def update_dissatisfied_user_info(visitor_id: str, user_info: dict) -> None:
+    """Keep user_info fresh whenever the visitor fills/updates the contact form."""
+    _col("dissatisfied_users").update_one(
+        {"visitor_id": visitor_id},
+        {"$set": {"user_info": user_info, "updated_at": _now()}},
+    )
+
+
+def update_dissatisfied_status(record_id: str, status: str, notes: str = "") -> None:
+    """Admin marks a dissatisfied user as solved or rejected."""
+    update: dict = {
+        "status":     status,
+        "updated_at": _now(),
+    }
+    if status in ("solved", "rejected"):
+        update["resolved_at"] = _now()
+    if notes:
+        update["admin_notes"] = notes
+    _col("dissatisfied_users").update_one({"id": record_id}, {"$set": update})
+
+
+def get_dissatisfied_users(
+    status: str | None = None,
+    limit: int = 100,
+    skip:  int = 0,
+) -> list[dict]:
+    """Return dissatisfied users, optionally filtered by status."""
+    query: dict = {}
+    if status:
+        query["status"] = status
+    return list(
+        _col("dissatisfied_users")
+        .find(query, {"_id": 0})
+        .sort("updated_at", DESCENDING)
+        .skip(skip)
+        .limit(limit)
+    )
+
+
+def count_dissatisfied_users(status: str | None = None) -> int:
+    query: dict = {} if not status else {"status": status}
+    return _col("dissatisfied_users").count_documents(query)
+
+
+def get_visitor_chat_history(visitor_id: str, limit: int = 200) -> list[dict]:
+    """
+    Return full chat history for a visitor, enriched with their feedback.
+    Each turn is a chat_log doc; a 'feedback' field is injected if found.
+    """
+    logs = list(
+        _col("chat_logs")
+        .find({"visitor_id": visitor_id}, {"_id": 0})
+        .sort("created_at", ASCENDING)
+        .limit(limit)
+    )
+    # Build a lookup of chat_log_id → feedback
+    log_ids = [l["id"] for l in logs]
+    feedbacks = {
+        f["chat_log_id"]: f["feedback"]
+        for f in _col("chat_feedback").find(
+            {"visitor_id": visitor_id, "chat_log_id": {"$in": log_ids}},
+            {"_id": 0, "chat_log_id": 1, "feedback": 1},
+        )
+    }
+    for log in logs:
+        log["feedback"] = feedbacks.get(log["id"])   # "like" | "dislike" | None
+    return logs

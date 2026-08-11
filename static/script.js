@@ -185,12 +185,26 @@ async function initVisitor() {
             // Persist UUID so every future visit reuses the same identity
             localStorage.setItem(LS_KEY, visitorId);
 
-            // If backend has a name, show greeting immediately
+            // If backend has a name or email, mark as already identified
             if (data.name) {
                 visitorName = data.name;
                 showGreeting(visitorName);
-                leadFormShown    = true;   // already identified — no need to ask
-                leadFormDismissed= true;
+                leadFormShown     = true;
+                leadFormDismissed = true;
+            } else {
+                // Check if they filled the dislike contact form in a previous session
+                try {
+                    const r = await fetch("/get-user-info");
+                    const d = await r.json();
+                    if (d.user_info && (d.user_info.name || d.user_info.email)) {
+                        leadFormShown     = true;
+                        leadFormDismissed = true;
+                        if (d.user_info.name) {
+                            visitorName = d.user_info.name;
+                            showGreeting(visitorName);
+                        }
+                    }
+                } catch (_) {}
             }
         }
     } catch (e) {
@@ -238,10 +252,27 @@ function wireLeadModal() {
     });
 }
 
-function maybeShowLeadForm() {
+async function maybeShowLeadForm() {
     if (leadFormShown || leadFormDismissed) return;
     // Show after the 3rd question
     if (questionCount < 3) return;
+
+    // Don't show if user already gave details (from dislike contact form or previous session)
+    try {
+        const res  = await fetch("/get-user-info");
+        const data = await res.json();
+        if (data.user_info && (data.user_info.name || data.user_info.email)) {
+            // Already have their details — no need to ask again
+            leadFormShown     = true;
+            leadFormDismissed = true;
+            // Show greeting if we have a name and haven't shown it yet
+            if (data.user_info.name && !visitorName) {
+                visitorName = data.user_info.name;
+                showGreeting(visitorName);
+            }
+            return;
+        }
+    } catch (_) {}
 
     leadFormShown = true;
     showLeadModal();
@@ -494,7 +525,9 @@ function sendMessage() {
         removeLoading();
         addBotMessage(
             result.status === "success" ? result.answer : "❌ " + result.message,
-            elapsed_ms
+            elapsed_ms,
+            result.chat_log_id || "",
+            question
         );
         _enableInput();
         setTimeout(() => {
@@ -505,7 +538,7 @@ function sendMessage() {
     })
     .catch(err => {
         removeLoading();
-        addBotMessage("❌ " + err.message, null);
+        addBotMessage("❌ " + err.message, null, "", question);
         _enableInput();
         setTimeout(() => {
             autoScrollChat();
@@ -532,9 +565,10 @@ function addUserMessage(text) {
     autoScrollChat();
 }
 
-function addBotMessage(rawText, elapsed_ms) {
+function addBotMessage(rawText, elapsed_ms, chatLogId, rawQuestion) {
     msgCounter++;
-    const speechId = "speech_" + msgCounter;
+    const speechId   = "speech_"    + msgCounter;
+    const feedbackId = "feedback_"  + msgCounter;
 
     let bodyHtml;
     if (typeof marked !== "undefined") {
@@ -578,9 +612,33 @@ function addBotMessage(rawText, elapsed_ms) {
                 </svg>
                 Play
             </button>
+            <div class="feedback-group" id="${feedbackId}">
+                <button class="feedback-btn like-btn" title="Helpful" aria-label="Like">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>
+                        <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+                    </svg>
+                    <span class="feedback-count"></span>
+                </button>
+                <button class="feedback-btn dislike-btn" title="Not helpful" aria-label="Dislike">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>
+                        <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+                    </svg>
+                    <span class="feedback-count"></span>
+                </button>
+            </div>
         </div>`;
 
+    // Store chat_log_id on the card — set after /chat response arrives
+    card.dataset.chatLogId  = chatLogId || "";
+    card.dataset.question   = rawQuestion || "";
+    card.dataset.feedbackId = feedbackId;
+
     chatBox.appendChild(card);
+
+    // Wire like/dislike buttons
+    _wireFeedbackButtons(card, rawText);
 
     if (typeof hljs !== "undefined") {
         card.querySelectorAll("pre code").forEach(block => hljs.highlightElement(block));
@@ -595,6 +653,8 @@ function addBotMessage(rawText, elapsed_ms) {
             speakMessage(speechId, playBtn);
         }, 150);
     }
+
+    return card;   // return so caller can set chat_log_id after the response arrives
 }
 
 // ===============================
@@ -875,8 +935,16 @@ function _setBtnIdle(btn) {
 
         const active  = document.activeElement;
         const inField = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
-        if (inField && chatInput.value.length > 0 && !isRecording) return;
-        if (active && active.closest(".lead-modal")) return;
+
+        // Block countdown whenever ANY input/textarea has focus — user is typing
+        if (inField && !isRecording) return;
+
+        // Also block if focus is inside any modal
+        if (active && (
+            active.closest(".lead-modal") ||
+            active.closest(".support-modal") ||
+            active.closest(".dissat-inline-form")
+        )) return;
 
         e.preventDefault();
         if (isRecording)  { stopRecording();  return; }
@@ -901,3 +969,600 @@ function _setBtnIdle(btn) {
     });
 
 }());
+
+
+// ===============================================================
+// SATISFACTION & LLM SWITCHING SYSTEM
+// ===============================================================
+
+// ── State ────────────────────────────────────────────────────────
+let _currentLlmMode  = "primary";   // "primary" | "secondary"
+let _supportEmail    = "yashrakeshsoni@gmail.com";
+
+// ── DOM refs ─────────────────────────────────────────────────────
+const supportModal       = document.getElementById("supportModal");
+const supportModalClose  = document.getElementById("supportModalClose");
+const supportCancelBtn   = document.getElementById("supportCancelBtn");
+const supportForm        = document.getElementById("supportForm");
+const supportName        = document.getElementById("supportName");
+const supportEmail       = document.getElementById("supportEmail");
+const supportPhone       = document.getElementById("supportPhone");
+const supportError       = document.getElementById("supportError");
+const supportSubmitBtn   = document.getElementById("supportSubmitBtn");
+const supportAlreadyFilled = document.getElementById("supportAlreadyFilled");
+const supportFilledName  = document.getElementById("supportFilledName");
+const supportFilledEmail = document.getElementById("supportFilledEmail");
+const supportEmailChip   = document.getElementById("supportEmailChip");
+const supportEmailText   = document.getElementById("supportEmailText");
+
+// ── Wire support modal ───────────────────────────────────────────
+if (supportModalClose) supportModalClose.addEventListener("click", closeSupportModal);
+if (supportCancelBtn)  supportCancelBtn.addEventListener("click",  closeSupportModal);
+if (supportModal)      supportModal.addEventListener("click", (e) => {
+    if (e.target === supportModal) closeSupportModal();
+});
+if (supportForm) supportForm.addEventListener("submit", submitSupportForm);
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && supportModal &&
+        supportModal.classList.contains("support-modal-visible")) {
+        closeSupportModal();
+    }
+});
+
+// ── Open / close ─────────────────────────────────────────────────
+function openSupportModal(email) {
+    if (!supportModal) return;
+
+    // Update email chip
+    const resolvedEmail = email || _supportEmail;
+    if (supportEmailChip) supportEmailChip.href = "mailto:" + resolvedEmail;
+    if (supportEmailText) supportEmailText.textContent = resolvedEmail;
+
+    // Check if user already filled the form
+    fetch("/get-user-info")
+        .then(r => r.json())
+        .then(data => {
+            const info = data.user_info;
+            if (info && (info.name || info.email)) {
+                // Show personalised message
+                _showAlreadyFilledState(info);
+            } else {
+                // Show fresh form
+                _showFreshFormState();
+            }
+            // Reveal modal
+            supportModal.classList.add("support-modal-visible");
+            setTimeout(() => {
+                if (supportName && supportForm.style.display !== "none") supportName.focus();
+            }, 200);
+        })
+        .catch(() => {
+            _showFreshFormState();
+            supportModal.classList.add("support-modal-visible");
+        });
+}
+
+function closeSupportModal() {
+    if (!supportModal) return;
+    supportModal.classList.remove("support-modal-visible");
+}
+
+function _showAlreadyFilledState(info) {
+    if (!supportAlreadyFilled || !supportForm) return;
+    if (supportFilledName)  supportFilledName.textContent  = "Hello " + (info.name || "there") + "! 👋";
+    if (supportFilledEmail) supportFilledEmail.textContent = info.email || "";
+    supportAlreadyFilled.style.display = "flex";
+    supportForm.style.display          = "none";
+}
+
+function _showFreshFormState() {
+    if (!supportAlreadyFilled || !supportForm) return;
+    supportAlreadyFilled.style.display = "none";
+    supportForm.style.display          = "flex";
+}
+
+// ── Submit support form ──────────────────────────────────────────
+async function submitSupportForm(e) {
+    e.preventDefault();
+
+    const name  = (supportName?.value  || "").trim();
+    const email = (supportEmail?.value || "").trim();
+    const phone = (supportPhone?.value || "").trim();
+
+    if (!name && !email) {
+        _showSupportError("Please enter your name or email.");
+        return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        _showSupportError("Please enter a valid email address.");
+        return;
+    }
+
+    _hideSupportError();
+    _setSupportSubmitting(true);
+
+    try {
+        const res  = await fetch("/submit-contact-form", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ name, email, phone }),
+        });
+        const data = await res.json();
+
+        if (data.status === "success") {
+            // Switch to personalised state
+            _showAlreadyFilledState({ name, email });
+            // Update greeting chip if name provided
+            if (name) showGreeting(name);
+        } else {
+            _showSupportError(data.message || "Something went wrong. Please try again.");
+        }
+    } catch (err) {
+        _showSupportError("Network error. Please try again.");
+    } finally {
+        _setSupportSubmitting(false);
+    }
+}
+
+function _showSupportError(msg) {
+    if (!supportError) return;
+    supportError.textContent   = msg;
+    supportError.style.display = "block";
+}
+function _hideSupportError() {
+    if (!supportError) return;
+    supportError.textContent   = "";
+    supportError.style.display = "none";
+}
+function _setSupportSubmitting(loading) {
+    if (!supportSubmitBtn) return;
+    supportSubmitBtn.disabled  = loading;
+    supportSubmitBtn.innerHTML = loading
+        ? `<span class="lead-btn-spinner"></span> Sending…`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Send Request`;
+}
+
+// ── Satisfaction prompt — render below a bot message ─────────────
+function showSatisfactionPrompt(email) {
+    // Remove any existing prompt first (only one at a time)
+    const old = document.querySelector(".satisfaction-prompt");
+    if (old) old.remove();
+
+    const prompt = document.createElement("div");
+    prompt.className = "satisfaction-prompt";
+
+    prompt.innerHTML = `
+        <div class="satisfaction-prompt-text">
+            <span class="sat-emoji">😊</span>
+            Are you satisfied with this answer?
+        </div>
+        <div class="satisfaction-prompt-actions">
+            <button class="sat-btn sat-btn-yes" id="satBtnYes">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                Yes, helpful!
+            </button>
+            <button class="sat-btn sat-btn-no" id="satBtnNo">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                No, try better
+            </button>
+            <button class="sat-btn sat-btn-skip" id="satBtnSkip">Skip</button>
+        </div>`;
+
+    chatBox.appendChild(prompt);
+    autoScrollChat();
+
+    // Auto-dismiss after 12 seconds if user does nothing
+    const autoDismiss = setTimeout(() => {
+        if (prompt.isConnected) prompt.remove();
+    }, 12000);
+
+    // Yes — satisfied, keep current LLM
+    prompt.querySelector("#satBtnYes").addEventListener("click", () => {
+        clearTimeout(autoDismiss);
+        prompt.remove();
+        _handleSatisfaction(true, email);
+    });
+
+    // No — not satisfied, try switching LLM
+    prompt.querySelector("#satBtnNo").addEventListener("click", () => {
+        clearTimeout(autoDismiss);
+        prompt.remove();
+        _handleSatisfaction(false, email);
+    });
+
+    // Skip — dismiss silently
+    prompt.querySelector("#satBtnSkip").addEventListener("click", () => {
+        clearTimeout(autoDismiss);
+        prompt.remove();
+    });
+}
+
+// ── Handle satisfaction API call ─────────────────────────────────
+async function _handleSatisfaction(satisfied, email) {
+    try {
+        const res  = await fetch("/submit-satisfaction", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ satisfied }),
+        });
+        const data = await res.json();
+
+        if (data.status !== "success") return;
+
+        const newMode    = data.llm_mode    || _currentLlmMode;
+        const showContact = data.show_contact || false;
+        const resolvedEmail = data.support_email || email || _supportEmail;
+
+        if (resolvedEmail) _supportEmail = resolvedEmail;
+
+        // If LLM was switched, show a badge in the chat
+        if (!satisfied && newMode !== _currentLlmMode) {
+            _currentLlmMode = newMode;
+            _showLlmSwitchBadge(newMode);
+        }
+
+        // If still unsatisfied after secondary, show contact modal
+        if (showContact) {
+            setTimeout(() => openSupportModal(resolvedEmail), 400);
+        }
+
+    } catch (err) {
+        console.warn("Satisfaction submit failed:", err);
+    }
+}
+
+// ── LLM switch badge in chat ─────────────────────────────────────
+function _showLlmSwitchBadge(mode) {
+    const badge = document.createElement("div");
+    badge.className = "llm-switch-badge";
+    badge.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="17 1 21 5 17 9"/>
+            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+            <polyline points="7 23 3 19 7 15"/>
+            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+        </svg>
+        Switched to enhanced model for better answers`;
+    chatBox.appendChild(badge);
+    autoScrollChat();
+}
+
+// ── Hook into sendMessage to consume the flags ───────────────────
+// Patch the existing .then() handler by overriding sendMessage
+
+const _originalSendMessage = sendMessage;
+
+// Override sendMessage to intercept satisfaction flags from /chat response
+(function patchSendMessage() {
+    // Remove old listener, re-add with patched handler
+    askBtn.removeEventListener("click", sendMessage);
+    questionInput.removeEventListener("keypress", _kpHandler);
+
+    window.sendMessage = function sendMessage() {
+        const question = questionInput.value.trim();
+        if (!question) return;
+
+        if (welcomeState) welcomeState.style.display = "none";
+
+        addUserMessage(question);
+        questionInput.value = "";
+        questionCount++;
+
+        askBtn.disabled           = true;
+        questionInput.placeholder = "Ask anything about your documents…";
+
+        const t_start = Date.now();
+        addLoading();
+
+        fetch("/chat", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ question, visitor_id: visitorId }),
+        })
+        .then(r => r.json())
+        .then(result => {
+            const elapsed_ms = result.elapsed_ms || (Date.now() - t_start);
+            removeLoading();
+            const botCard = addBotMessage(
+                result.status === "success" ? result.answer : "❌ " + result.message,
+                elapsed_ms,
+                result.chat_log_id || "",
+                question
+            );
+            _enableInput();
+
+            // Sync LLM mode from server response
+            if (result.llm_mode) _currentLlmMode = result.llm_mode;
+            if (result.support_email) _supportEmail = result.support_email;
+
+            setTimeout(() => {
+                autoScrollChat();
+                questionInput.focus();
+                maybeShowLeadForm();
+
+                // Show satisfaction prompt if backend signals it
+                if (result.show_satisfaction_prompt) {
+                    setTimeout(() => {
+                        showSatisfactionPrompt(result.support_email || _supportEmail);
+                    }, 600);
+                }
+            }, 120);
+        })
+        .catch(err => {
+            removeLoading();
+            addBotMessage("❌ " + err.message, null, "", question);
+            _enableInput();
+            setTimeout(() => {
+                autoScrollChat();
+                questionInput.focus();
+                maybeShowLeadForm();
+            }, 120);
+        });
+    };
+
+    askBtn.addEventListener("click", window.sendMessage);
+    questionInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter" && !askBtn.disabled) window.sendMessage();
+    });
+}());
+
+// Store keypress handler ref for cleanup (needed by patchSendMessage)
+function _kpHandler(e) {
+    if (e.key === "Enter" && !askBtn.disabled) sendMessage();
+}
+
+
+// ===============================================================
+// LIKE / DISLIKE FEEDBACK SYSTEM
+// ===============================================================
+
+// Session-level dislike counter (also confirmed server-side)
+let _sessionDislikeCount = 0;
+const DISLIKE_THRESHOLD  = 2;
+
+/**
+ * Wire like/dislike buttons on a bot message card.
+ * chatLogId is set on card.dataset.chatLogId (may be "" until /chat responds).
+ */
+function _wireFeedbackButtons(card, rawAnswer) {
+    const likeBtn    = card.querySelector(".like-btn");
+    const dislikeBtn = card.querySelector(".dislike-btn");
+
+    if (!likeBtn || !dislikeBtn) return;
+
+    likeBtn.addEventListener("click",    () => _handleFeedback(card, "like",    rawAnswer));
+    dislikeBtn.addEventListener("click", () => _handleFeedback(card, "dislike", rawAnswer));
+}
+
+async function _handleFeedback(card, feedback, rawAnswer) {
+    const chatLogId = card.dataset.chatLogId || "";
+    const question  = card.dataset.question  || "";
+    const likeBtn    = card.querySelector(".like-btn");
+    const dislikeBtn = card.querySelector(".dislike-btn");
+
+    // Determine previous state
+    const wasLiked    = likeBtn.classList.contains("active");
+    const wasDisliked = dislikeBtn.classList.contains("active");
+    const isSameClick = (feedback === "like" && wasLiked) ||
+                        (feedback === "dislike" && wasDisliked);
+
+    // Toggle off if clicking the same button again
+    if (isSameClick) {
+        likeBtn.classList.remove("active");
+        dislikeBtn.classList.remove("active");
+        // Still send to backend to flip the record
+    }
+
+    // Ripple animation
+    const btn = feedback === "like" ? likeBtn : dislikeBtn;
+    btn.classList.remove("ripple");
+    void btn.offsetWidth;
+    btn.classList.add("ripple");
+    setTimeout(() => btn.classList.remove("ripple"), 500);
+
+    // Update active state immediately for instant feel
+    likeBtn.classList.toggle("active",    feedback === "like"    && !isSameClick);
+    dislikeBtn.classList.toggle("active", feedback === "dislike" && !isSameClick);
+
+    // No chat_log_id yet (error case) — still animate, skip API
+    if (!chatLogId) return;
+
+    try {
+        const res  = await fetch("/chat-feedback", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({
+                chat_log_id: chatLogId,
+                feedback:    isSameClick ? "like" : feedback,  // flipping same = treat as neutral→like
+                question,
+                answer: rawAnswer,
+            }),
+        });
+        const data = await res.json();
+        if (data.status !== "success") return;
+
+        if (feedback === "dislike" && !isSameClick) {
+            _sessionDislikeCount = data.dislike_count || (_sessionDislikeCount + 1);
+        }
+
+        // If threshold reached, show inline contact card below this message
+        // show_contact can fire on 2nd, 3rd, 4th... dislike — always re-show
+        if (data.show_contact && feedback === "dislike" && !isSameClick) {
+            const old = document.querySelector(".dissat-contact-card");
+            if (old) old.remove();
+            _insertDissatCard(card, data.support_email || _supportEmail);
+        }
+
+    } catch (err) {
+        console.warn("Feedback submit failed:", err);
+    }
+}
+
+/**
+ * Insert inline dissatisfied contact card right after the bot message card.
+ * Checks /get-user-info first — shows personalised msg if form already filled.
+ */
+async function _insertDissatCard(afterCard, email) {
+    const resolvedEmail = email || _supportEmail || "yashrakeshsoni@gmail.com";
+
+    // Check if user already filled the form
+    let userInfo = null;
+    try {
+        const r = await fetch("/get-user-info");
+        const d = await r.json();
+        userInfo = d.user_info || null;
+    } catch (_) {}
+
+    const card = document.createElement("div");
+    card.className = "dissat-contact-card";
+
+    const alreadyFilled = userInfo && (userInfo.name || userInfo.email);
+
+    card.innerHTML = `
+        <div class="dissat-card-header">
+            <div class="dissat-card-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M16 16s-1.5-2-4-2-4 2-4 2"/>
+                    <line x1="9" y1="9" x2="9.01" y2="9"/>
+                    <line x1="15" y1="9" x2="15.01" y2="9"/>
+                </svg>
+            </div>
+            <div class="dissat-card-text">
+                <h4>We noticed you're not finding the answers helpful</h4>
+                <p>Our team can help you personally. Reach out directly or leave your details.</p>
+            </div>
+        </div>
+
+        <a href="mailto:${resolvedEmail}" class="dissat-email-row" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+            </svg>
+            <span>${resolvedEmail}</span>
+        </a>
+
+        ${alreadyFilled
+            ? `<div class="dissat-already-row">
+                 <strong>Hello ${userInfo.name || "there"}!</strong>
+                 We will contact you at <strong>${userInfo.email || ""}</strong> for personal query resolution.
+               </div>`
+            : `<button class="dissat-form-toggle" id="dissatFormToggle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                    <circle cx="12" cy="7" r="4"/>
+                </svg>
+                Fill contact form for personal assistance
+               </button>
+               <div class="dissat-inline-form" id="dissatInlineForm" style="display:none;">
+                 <div class="lead-field">
+                   <label class="lead-label">Name</label>
+                   <input type="text" class="lead-input" id="dissatName" placeholder="Your name" autocomplete="name"/>
+                 </div>
+                 <div class="lead-field">
+                   <label class="lead-label">Email</label>
+                   <input type="email" class="lead-input" id="dissatEmail" placeholder="your@email.com" autocomplete="email"/>
+                 </div>
+                 <div class="lead-field">
+                   <label class="lead-label">Phone <span style="font-weight:400;color:#b0bec5">(optional)</span></label>
+                   <input type="tel" class="lead-input" id="dissatPhone" placeholder="+91 98765 43210" autocomplete="tel"/>
+                 </div>
+                 <div id="dissatError" class="dissat-error" style="display:none;"></div>
+                 <div class="dissat-form-row">
+                   <button class="dissat-cancel-btn" id="dissatCancelBtn">Cancel</button>
+                   <button class="dissat-submit-btn" id="dissatSubmitBtn">
+                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                     Submit
+                   </button>
+                 </div>
+               </div>`
+        }`;
+
+    // Insert after the bot card
+    afterCard.insertAdjacentElement("afterend", card);
+    autoScrollChat();
+
+    if (alreadyFilled) return;
+
+    // Wire form toggle
+    const toggle     = card.querySelector("#dissatFormToggle");
+    const formDiv    = card.querySelector("#dissatInlineForm");
+    const cancelBtn  = card.querySelector("#dissatCancelBtn");
+    const submitBtn  = card.querySelector("#dissatSubmitBtn");
+    const errDiv     = card.querySelector("#dissatError");
+    const nameInput  = card.querySelector("#dissatName");
+    const emailInput = card.querySelector("#dissatEmail");
+    const phoneInput = card.querySelector("#dissatPhone");
+
+    toggle.addEventListener("click", () => {
+        formDiv.style.display = formDiv.style.display === "none" ? "flex" : "none";
+        toggle.style.display  = "none";
+        setTimeout(() => nameInput && nameInput.focus(), 50);
+    });
+
+    cancelBtn.addEventListener("click", () => {
+        formDiv.style.display = "none";
+        toggle.style.display  = "flex";
+    });
+
+    submitBtn.addEventListener("click", async () => {
+        const name  = (nameInput?.value  || "").trim();
+        const email = (emailInput?.value || "").trim();
+        const phone = (phoneInput?.value || "").trim();
+
+        if (!name && !email) {
+            errDiv.textContent   = "Please enter your name or email.";
+            errDiv.style.display = "block";
+            return;
+        }
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            errDiv.textContent   = "Please enter a valid email address.";
+            errDiv.style.display = "block";
+            return;
+        }
+        errDiv.style.display = "none";
+        submitBtn.disabled   = true;
+        submitBtn.innerHTML  = `<span class="lead-btn-spinner"></span> Sending…`;
+
+        try {
+            const res  = await fetch("/submit-contact-form", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body:    JSON.stringify({ name, email, phone }),
+            });
+            const data = await res.json();
+
+            if (data.status === "success") {
+                // Replace form with personalised confirmation
+                formDiv.style.display  = "none";
+                if (toggle) toggle.style.display = "none";
+
+                // Insert thank you row
+                const thankYou = document.createElement("div");
+                thankYou.className = "dissat-already-row";
+                thankYou.innerHTML = `<strong>Hello ${name || "there"}.</strong> We will contact you at <strong>${email}</strong> for personal query resolution.`;
+                formDiv.insertAdjacentElement("afterend", thankYou);
+
+                // Update greeting chip
+                if (name) showGreeting(name);
+                autoScrollChat();
+            } else {
+                errDiv.textContent   = data.message || "Something went wrong.";
+                errDiv.style.display = "block";
+            }
+        } catch (e) {
+            errDiv.textContent   = "Network error. Please try again.";
+            errDiv.style.display = "block";
+        } finally {
+            submitBtn.disabled  = false;
+            submitBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Send`;
+        }
+    });
+}

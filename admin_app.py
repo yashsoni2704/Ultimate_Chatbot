@@ -55,6 +55,10 @@ from db.models import (
     get_all_visitors,
     get_all_bookings,
     get_all_users,
+    get_dissatisfied_users,
+    count_dissatisfied_users,
+    update_dissatisfied_status,
+    get_visitor_chat_history,
 )
 
 logger = get_logger(__name__)
@@ -698,6 +702,104 @@ def admin_health():
         "mongodb":       "connected" if mongo_ok else "unavailable",
         "queue_pending": _work_queue.qsize(),
     })
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# DISSATISFIED USERS  — admin panel
+# ════════════════════════════════════════════════════════════════════════════
+
+@admin_app.route("/admin/api/dissatisfied-users", methods=["GET"])
+def admin_dissatisfied_users():
+    """
+    List dissatisfied users with optional status filter and pagination.
+    Query params: status (open|solved|rejected), page, per_page
+    """
+    try:
+        status   = request.args.get("status", "").strip() or None
+        page     = max(int(request.args.get("page",     1)),  1)
+        per_page = max(int(request.args.get("per_page", 20)), 1)
+        skip     = (page - 1) * per_page
+
+        users = get_dissatisfied_users(status=status, limit=per_page, skip=skip)
+        total = count_dissatisfied_users(status=status)
+
+        # Counts by status for badges
+        counts = {
+            "open":     count_dissatisfied_users("open"),
+            "solved":   count_dissatisfied_users("solved"),
+            "rejected": count_dissatisfied_users("rejected"),
+            "total":    count_dissatisfied_users(),
+        }
+
+        return jsonify({
+            "status": "success",
+            "users":  users,
+            "total":  total,
+            "page":   page,
+            "pages":  max(1, -(-total // per_page)),   # ceil division
+            "counts": counts,
+        })
+    except Exception as e:
+        logger.error(f" Error in /admin/api/dissatisfied-users: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@admin_app.route("/admin/api/dissatisfied-users/<record_id>/status", methods=["POST"])
+def admin_update_dissatisfied_status(record_id):
+    """
+    Mark a dissatisfied user as solved or rejected.
+    Body: { "status": "solved"|"rejected"|"open", "notes": "" }
+    """
+    try:
+        data   = request.get_json() or {}
+        status = data.get("status", "").strip().lower()
+        notes  = data.get("notes", "").strip()
+
+        if status not in ("open", "solved", "rejected"):
+            return jsonify({"status": "error", "message": "status must be open, solved, or rejected"}), 400
+
+        update_dissatisfied_status(record_id, status, notes)
+        logger.info(f"  Dissatisfied user {record_id} → {status}")
+        return jsonify({"status": "success", "record_id": record_id, "new_status": status})
+
+    except Exception as e:
+        logger.error(f" Error updating dissatisfied status: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@admin_app.route("/admin/api/visitor-chat-history/<visitor_id>", methods=["GET"])
+def admin_visitor_chat_history(visitor_id):
+    """
+    Return full chat history for a visitor, with feedback flags per message.
+    Used by the admin panel chat viewer when clicking a dissatisfied user row.
+    """
+    try:
+        if not visitor_id or len(visitor_id) < 8:
+            return jsonify({"status": "error", "message": "Invalid visitor_id"}), 400
+
+        limit   = min(int(request.args.get("limit", 200)), 500)
+        history = get_visitor_chat_history(visitor_id, limit=limit)
+
+        # Also fetch visitor profile and dissatisfied record for context
+        from db.models import get_visitor as _gv
+        from db.connection import get_db as _db
+        visitor    = _gv(visitor_id) or {}
+        dis_record = _db()["dissatisfied_users"].find_one(
+            {"visitor_id": visitor_id}, {"_id": 0}
+        )
+
+        return jsonify({
+            "status":         "success",
+            "visitor_id":     visitor_id,
+            "visitor":        visitor,
+            "dis_record":     dis_record,
+            "history":        history,
+            "total_messages": len(history),
+        })
+
+    except Exception as e:
+        logger.error(f" Error fetching visitor chat history: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

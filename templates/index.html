@@ -320,6 +320,96 @@
         </div>
     </div>
 
+    <!-- ── Support / Contact Modal ─────────────────────────── -->
+    <div id="supportModal" class="support-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="supportModalTitle">
+        <div class="support-modal">
+            <button class="support-modal-close" id="supportModalClose" aria-label="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
+
+            <div class="support-modal-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+            </div>
+
+            <h3 class="support-modal-title" id="supportModalTitle">We're here to help</h3>
+            <p class="support-modal-subtitle">We're sorry the answers weren't helpful enough. Reach out directly and we'll resolve your query personally.</p>
+
+            <!-- Email chip -->
+            <a id="supportEmailChip" href="mailto:yashrakeshsoni@gmail.com" class="support-email-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                    <polyline points="22,6 12,13 2,6"/>
+                </svg>
+                <span id="supportEmailText">yashrakeshsoni@gmail.com</span>
+            </a>
+
+            <div class="support-divider">
+                <div class="support-divider-line"></div>
+                <span class="support-divider-text">or fill the form</span>
+                <div class="support-divider-line"></div>
+            </div>
+
+            <!-- Already-filled personalised message (hidden by default) -->
+            <div id="supportAlreadyFilled" class="support-already-filled" style="display:none;">
+                <div class="support-already-filled-name" id="supportFilledName"></div>
+                <div class="support-already-filled-msg">
+                    We'll contact you soon at <span class="support-already-filled-email" id="supportFilledEmail"></span> for personal query resolution.
+                </div>
+            </div>
+
+            <!-- Contact form (shown if not already filled) -->
+            <form id="supportForm" class="support-form" novalidate>
+                <div class="lead-field">
+                    <label class="lead-label" for="supportName">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        Name
+                    </label>
+                    <input type="text" id="supportName" class="lead-input" placeholder="Your name" autocomplete="name"/>
+                </div>
+                <div class="lead-field">
+                    <label class="lead-label" for="supportEmail">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                            <polyline points="22,6 12,13 2,6"/>
+                        </svg>
+                        Email
+                    </label>
+                    <input type="email" id="supportEmail" class="lead-input" placeholder="your@email.com" autocomplete="email"/>
+                </div>
+                <div class="lead-field">
+                    <label class="lead-label" for="supportPhone">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.62 3.48 2 2 0 0 1 3.6 1.3h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.96a16 16 0 0 0 6.13 6.13l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+                        </svg>
+                        Phone <span style="font-weight:400;color:#b0bec5;text-transform:none;letter-spacing:0">(optional)</span>
+                    </label>
+                    <input type="tel" id="supportPhone" class="lead-input" placeholder="+91 98765 43210" autocomplete="tel"/>
+                </div>
+
+                <div id="supportError" class="support-error" style="display:none;"></div>
+
+                <div class="support-form-actions">
+                    <button type="button" class="support-cancel-btn" id="supportCancelBtn">Maybe later</button>
+                    <button type="submit" class="support-submit-btn" id="supportSubmitBtn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        Send Request
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>

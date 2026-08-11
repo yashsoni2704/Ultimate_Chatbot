@@ -28,6 +28,16 @@ from db.models import (
     save_chat_log,
     get_active_session,
     create_session,
+    increment_session_question_count,
+    update_session_llm_mode,
+    mark_satisfaction_asked,
+    save_session_user_info,
+    get_session_user_info,
+    save_chat_feedback,
+    get_session_dislike_count,
+    get_visitor_total_dislike_count,
+    upsert_dissatisfied_user,
+    update_dissatisfied_user_info,
 )
 
 logger = get_logger(__name__)
@@ -466,6 +476,30 @@ def chat():
         # ── Session tracking (only needed for RAG path) ───────
         session_id = _get_or_create_session(visitor_id) if visitor_id else ""
 
+        # ── LLM mode — read from session (primary or secondary) ──
+        llm_mode = "primary"
+        show_satisfaction_prompt = False
+        if session_id:
+            try:
+                sess_doc = increment_session_question_count(session_id)
+                llm_mode = sess_doc.get("llm_mode", "primary")
+                q_count  = sess_doc.get("question_count", 0)
+                last_asked = sess_doc.get("last_satisfaction_asked", 0)
+                interval = Config.SATISFACTION_CHECK_INTERVAL
+
+                # Trigger satisfaction prompt every N questions,
+                # but only if we haven't asked at this exact count yet
+                if (
+                    interval > 0
+                    and q_count > 0
+                    and q_count % interval == 0
+                    and last_asked != q_count
+                ):
+                    show_satisfaction_prompt = True
+                    mark_satisfaction_asked(session_id, q_count)
+            except Exception as exc:
+                logger.warning(f"  Session satisfaction tracking failed (non-fatal): {exc}")
+
         # ── Conversation history ──────────────────────────────
         history = []
         if Config.CONVERSATION_HISTORY:
@@ -486,6 +520,7 @@ def chat():
             answer = get_answer(
                 question,
                 history  = history,
+                llm_mode = llm_mode,
                 metadata = {
                     "source":   "user_chat",
                     "endpoint": "/chat",
@@ -499,7 +534,7 @@ def chat():
 
         def _save_rag_log(visitor_id, session_id, question, answer):
             try:
-                save_chat_log(
+                log_id = save_chat_log(
                     question      = question,
                     answer        = answer,
                     visitor_id    = visitor_id,
@@ -508,17 +543,25 @@ def chat():
                     found         = 1,
                 )
                 logger.debug(" Chat log saved to MongoDB")
+                return log_id
             except Exception as exc:
                 logger.warning(f"  Chat log save failed (non-fatal): {exc}")
+                return None
 
-        Thread(
-            target=_save_rag_log,
-            args=(visitor_id, session_id, question, answer),
-            daemon=True,
-        ).start()
+        # Save synchronously so we can return the log_id in the response
+        # (fast — just a MongoDB insert, not heavy computation)
+        chat_log_id = _save_rag_log(visitor_id, session_id, question, answer)
 
         logger.info("Answer generated successfully")
-        return jsonify({"status": "success", "answer": answer, "elapsed_ms": elapsed_ms})
+        return jsonify({
+            "status":                   "success",
+            "answer":                   answer,
+            "elapsed_ms":               elapsed_ms,
+            "llm_mode":                 llm_mode,
+            "show_satisfaction_prompt": show_satisfaction_prompt,
+            "support_email":            Config.SUPPORT_EMAIL,
+            "chat_log_id":              chat_log_id or "",
+        })
 
     except Exception as e:
         logger.error(f" Error in /chat endpoint: {str(e)}")
@@ -526,7 +569,234 @@ def chat():
 
 
 # ---------------------------------------------------------
+# SATISFACTION FEEDBACK
+# ---------------------------------------------------------
+
+@app.route("/submit-satisfaction", methods=["POST"])
+def submit_satisfaction():
+    """
+    Handle user satisfaction response.
+    Body: { "satisfied": true | false }
+    Returns: { "llm_mode": "primary"|"secondary", "show_contact": bool }
+    """
+    try:
+        data       = request.get_json() or {}
+        satisfied  = data.get("satisfied", True)
+        visitor_id = session.get("visitor_id", "")
+        session_id = _get_or_create_session(visitor_id) if visitor_id else ""
+
+        if not session_id:
+            return jsonify({"status": "error", "message": "No active session."}), 400
+
+        from db.models import get_active_session as _get_sess
+        from db.connection import get_db as _db
+        sess_doc = _db()["chat_sessions"].find_one({"id": session_id}, {"_id": 0})
+        current_mode = sess_doc.get("llm_mode", "primary") if sess_doc else "primary"
+
+        show_contact = False
+        new_mode     = current_mode
+
+        if not satisfied:
+            if current_mode == "primary":
+                # Switch to secondary LLM
+                new_mode = "secondary"
+                update_session_llm_mode(session_id, "secondary")
+                logger.info(f"  Session {session_id}: switched to secondary LLM")
+            else:
+                # Already on secondary and still unsatisfied → show contact
+                show_contact = True
+                logger.info(f"  Session {session_id}: still unsatisfied on secondary → show contact")
+
+        return jsonify({
+            "status":       "success",
+            "llm_mode":     new_mode,
+            "show_contact": show_contact,
+            "support_email": Config.SUPPORT_EMAIL,
+        })
+
+    except Exception as e:
+        logger.error(f" Error in /submit-satisfaction: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# CONTACT FORM SUBMISSION
+# ---------------------------------------------------------
+
+@app.route("/submit-contact-form", methods=["POST"])
+def submit_contact_form():
+    """
+    Save user contact info from the support form.
+    Body: { "name": "", "email": "", "phone": "" }
+    Also updates the dissatisfied_users record if one exists — keeps
+    user_info fresh even if the visitor fills the form mid-session.
+    """
+    try:
+        data       = request.get_json() or {}
+        name       = data.get("name",  "").strip()
+        email      = data.get("email", "").strip()
+        phone      = data.get("phone", "").strip()
+        visitor_id = session.get("visitor_id", "")
+        session_id = _get_or_create_session(visitor_id) if visitor_id else ""
+
+        if not name and not email:
+            return jsonify({"status": "error", "message": "Name or email required."}), 400
+
+        user_info = {"name": name, "email": email, "phone": phone}
+
+        if session_id:
+            save_session_user_info(session_id, name, email, phone)
+
+        # Always update visitor record — persists across sessions
+        if visitor_id:
+            upsert_visitor(visitor_id=visitor_id, name=name, email=email, phone=phone)
+
+        # Keep dissatisfied_users record fresh — if they're in the list, update their info
+        if visitor_id:
+            update_dissatisfied_user_info(visitor_id, user_info)
+
+        logger.info(f"  Contact form saved — visitor={visitor_id} name={name} email={email}")
+        return jsonify({"status": "success", "name": name, "email": email})
+
+    except Exception as e:
+        logger.error(f" Error in /submit-contact-form: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# GET USER INFO (check if contact form already filled)
+# ---------------------------------------------------------
+
+@app.route("/get-user-info", methods=["GET"])
+def get_user_info_route():
+    """
+    Return saved user_info for current session if it exists.
+    Used to show personalised message instead of contact form.
+    """
+    try:
+        visitor_id = session.get("visitor_id", "")
+        session_id = _get_or_create_session(visitor_id) if visitor_id else ""
+
+        user_info = None
+        if session_id:
+            user_info = get_session_user_info(session_id)
+
+        # Also check visitor record as fallback
+        if not user_info and visitor_id:
+            from db.models import get_visitor as _gv
+            visitor = _gv(visitor_id)
+            if visitor and (visitor.get("name") or visitor.get("email")):
+                user_info = {
+                    "name":  visitor.get("name",  ""),
+                    "email": visitor.get("email", ""),
+                    "phone": visitor.get("phone", ""),
+                }
+
+        return jsonify({
+            "status":    "success",
+            "user_info": user_info,  # None if not filled yet
+        })
+
+    except Exception as e:
+        logger.error(f" Error in /get-user-info: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
+# CHAT FEEDBACK  (like / dislike per message)
+# ---------------------------------------------------------
+
+@app.route("/chat-feedback", methods=["POST"])
+def chat_feedback():
+    """
+    Record like or dislike for a specific chat message.
+    Body: { "chat_log_id": "", "feedback": "like"|"dislike",
+            "question": "", "answer": "" }
+
+    On dislike:
+      - Saves to chat_feedback collection
+      - Counts session dislikes
+      - If >= 2 dislikes → upserts dissatisfied_users, returns show_contact=True
+    On like:
+      - Saves/updates feedback (may flip a previous dislike back to like)
+      - Re-counts; if count drops below threshold, does NOT remove from
+        dissatisfied list (admin visibility preserved)
+    """
+    try:
+        data        = request.get_json() or {}
+        chat_log_id = data.get("chat_log_id", "").strip()
+        feedback    = data.get("feedback", "").strip().lower()
+        question    = data.get("question", "")
+        answer      = data.get("answer",   "")
+
+        if feedback not in ("like", "dislike"):
+            return jsonify({"status": "error", "message": "feedback must be 'like' or 'dislike'"}), 400
+        if not chat_log_id:
+            return jsonify({"status": "error", "message": "chat_log_id required"}), 400
+
+        visitor_id = session.get("visitor_id", "")
+        session_id = _get_or_create_session(visitor_id) if visitor_id else ""
+
+        if not visitor_id:
+            return jsonify({"status": "error", "message": "No visitor session"}), 400
+
+        # Upsert the feedback record
+        save_chat_feedback(
+            visitor_id  = visitor_id,
+            session_id  = session_id,
+            chat_log_id = chat_log_id,
+            feedback    = feedback,
+            question    = question,
+            answer      = answer,
+        )
+
+        show_contact       = False
+        dislike_count      = 0
+        DISLIKE_THRESHOLD  = 2
+
+        if feedback == "dislike":
+            # Use total lifetime count — more reliable than per-session
+            dislike_count = get_visitor_total_dislike_count(visitor_id)
+            logger.info(f"  Dislike recorded — visitor={visitor_id} total_count={dislike_count}")
+
+            if dislike_count >= DISLIKE_THRESHOLD:
+                # Fetch any user_info already on file
+                user_info = get_session_user_info(session_id)
+                if not user_info:
+                    from db.models import get_visitor as _gv
+                    v = _gv(visitor_id)
+                    if v and (v.get("name") or v.get("email")):
+                        user_info = {
+                            "name":  v.get("name",  ""),
+                            "email": v.get("email", ""),
+                            "phone": v.get("phone", ""),
+                        }
+
+                upsert_dissatisfied_user(
+                    visitor_id    = visitor_id,
+                    session_id    = session_id,
+                    dislike_count = dislike_count,
+                    user_info     = user_info,
+                )
+                show_contact = True
+                logger.info(f"  Dissatisfied user upserted — visitor={visitor_id}")
+
+        return jsonify({
+            "status":        "success",
+            "feedback":      feedback,
+            "dislike_count": dislike_count,
+            "show_contact":  show_contact,
+            "support_email": Config.SUPPORT_EMAIL,
+        })
+
+    except Exception as e:
+        logger.error(f" Error in /chat-feedback: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------
 # INIT SESSION — called by frontend on every page load
+
 # Accepts an optional visitor_id from localStorage.
 # Returns the visitor_id and any stored name so the UI
 # can greet returning users immediately.
