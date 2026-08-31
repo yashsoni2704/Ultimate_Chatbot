@@ -672,6 +672,43 @@ body {
     font-size: 12px;
     font-weight: 600;
 }
+
+/* Model Badges */
+.model-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 6px;
+    padding: 3px 10px;
+    border: 1px solid transparent;
+}
+.model-badge.legacy {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+    border-color: rgba(148, 163, 184, 0.2);
+}
+.model-badge.google {
+    background: rgba(59, 130, 246, 0.12);
+    color: #60a5fa;
+    border-color: rgba(59, 130, 246, 0.25);
+}
+.model-badge.ollama {
+    background: rgba(168, 85, 247, 0.12);
+    color: #c084fc;
+    border-color: rgba(168, 85, 247, 0.25);
+}
+
+/* Chat Viewer Model Badge */
+.cv-model-badge {
+    margin-bottom: 8px;
+    display: flex;
+}
+.cv-model-badge .model-badge {
+    font-size: 9.5px;
+    padding: 2px 8px;
+}
 .date-text { color: #64748b; font-size: 12px; }
 .delete-btn {
     display: flex;
@@ -2254,3 +2291,29 @@ code {
     box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
 }
 .kb-select:hover { border-color: #a5b4fc; }
+
+/* ============================================================
+   LLM Performance Section Styles
+   ============================================================ */
+.llm-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin: 20px 24px;
+}
+.llm-stat-card {
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.llm-stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+}
+.llm-stat-card .card-icon {
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+}

@@ -59,6 +59,7 @@ from db.models import (
     count_dissatisfied_users,
     update_dissatisfied_status,
     get_visitor_chat_history,
+    get_llm_performance_stats,
 )
 
 logger = get_logger(__name__)
@@ -568,6 +569,19 @@ def api_stats():
         })
     except Exception as exc:
         logger.error(f"  /admin/api/stats error: {exc}")
+        return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@admin_app.route("/admin/api/llm-performance", methods=["GET"])
+def api_llm_performance():
+    try:
+        stats = get_llm_performance_stats()
+        return jsonify({
+            "status": "success",
+            "stats": stats
+        })
+    except Exception as exc:
+        logger.error(f"  /admin/api/llm-performance error: {exc}")
         return jsonify({"status": "error", "message": str(exc)}), 500
 
 

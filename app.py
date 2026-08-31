@@ -532,7 +532,22 @@ def chat():
                 _chat_in_flight = False
         elapsed_ms = int((time.time() - _t_start) * 1000)
 
-        def _save_rag_log(visitor_id, session_id, question, answer):
+        # Resolve active model name
+        model_name = "Unknown"
+        if llm_mode == "secondary":
+            provider = Config.SECONDARY_LLM_PROVIDER
+            if provider == "google":
+                model_name = f"Google: {Config.GOOGLE_LLM_MODEL}"
+            else:
+                model_name = f"Ollama: {Config.SECONDARY_LLM_MODEL}"
+        else:
+            provider = Config.LLM_PROVIDER
+            if provider == "google":
+                model_name = f"Google: {Config.GOOGLE_LLM_MODEL}"
+            else:
+                model_name = f"Ollama: {Config.LLM_MODEL}"
+
+        def _save_rag_log(visitor_id, session_id, question, answer, model_name):
             try:
                 log_id = save_chat_log(
                     question      = question,
@@ -541,6 +556,7 @@ def chat():
                     session_id    = session_id,
                     response_type = "rag",
                     found         = 1,
+                    llm_model     = model_name,
                 )
                 logger.debug(" Chat log saved to MongoDB")
                 return log_id
@@ -550,7 +566,7 @@ def chat():
 
         # Save synchronously so we can return the log_id in the response
         # (fast — just a MongoDB insert, not heavy computation)
-        chat_log_id = _save_rag_log(visitor_id, session_id, question, answer)
+        chat_log_id = _save_rag_log(visitor_id, session_id, question, answer, model_name)
 
         logger.info("Answer generated successfully")
         return jsonify({

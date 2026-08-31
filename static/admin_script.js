@@ -79,6 +79,21 @@ function escHtml(str) {
         .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+function getModelBadge(model) {
+    if (!model) return `<span class="model-badge legacy">—</span>`;
+    const m = model.toLowerCase();
+    let badgeClass = "legacy";
+    let cleanModel = model;
+    
+    if (m.includes("gemini")) {
+        badgeClass = "google";
+    } else if (m.includes("llama") || m.includes("mistral") || m.includes("ollama")) {
+        badgeClass = "ollama";
+    }
+    
+    return `<span class="model-badge ${badgeClass}" title="${escHtml(model)}">${escHtml(cleanModel)}</span>`;
+}
+
 
 // ════════════════════════════════════════════════════════════════════════════
 //  UPLOAD MENU TOGGLE
@@ -821,13 +836,14 @@ function hideScrapeStatus()              { scrapeStatus.style.display = "none"; 
 //  SECTION NAVIGATION
 // ════════════════════════════════════════════════════════════════════════════
 
-const SECTIONS = ["kb", "chats", "visitors", "bookings", "dissat", "stt"];
+const SECTIONS = ["kb", "chats", "visitors", "bookings", "dissat", "llm", "stt"];
 const PAGE_TITLES = {
     kb:       ["Knowledge Base Manager",    "Upload documents and URLs to expand what the chatbot knows"],
     chats:    ["Chat Logs",                 "All conversations recorded from users"],
     visitors: ["Visitors",                  "IP, geo, browser and device data for every visitor"],
     bookings: ["Bookings",                  "Test-drive and service slot bookings"],
     dissat:   ["Feedback Issues",        "Users who disliked answers — manage, resolve, or view their chat history"],
+    llm:      ["LLM Performance",           "Track satisfaction and compare performance across models"],
     stt:      ["STT Settings",              "Switch the Speech-to-Text provider used for voice input"],
 };
 
@@ -854,6 +870,7 @@ function showSection(name) {
     if (name === "bookings") loadBookings();
     if (name === "stt")      loadSttSettings();
     if (name === "dissat")   loadDissatisfied();
+    if (name === "llm")      loadLLMPerformance();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -936,6 +953,7 @@ async function loadChats(page = chatsCurrentPage) {
                 <td>${visitorLabel}</td>
                 <td class="td-truncate" title="${escHtml(log.query||"")}">${escHtml((log.query||"").slice(0,80))}${(log.query||"").length>80?"…":""}</td>
                 <td class="td-truncate" title="${escHtml(log.answer||"")}">${escHtml((log.answer||"").slice(0,100))}${(log.answer||"").length>100?"…":""}</td>
+                <td>${getModelBadge(log.llm_model)}</td>
                 <td><span class="type-badge" style="background:${typeColor}22;color:${typeColor};border-color:${typeColor}44;">${escHtml(log.response_type||"—")}</span></td>`;
             chatsTableBody.appendChild(tr);
         });
@@ -1503,11 +1521,16 @@ async function openChatViewer(visitorId, recordId, currentStatus) {
                 ? `<div class="cv-feedback-pill liked">User marked this response as helpful</div>`
                 : "";
 
+            const modelBadge = turn.llm_model 
+                ? `<div class="cv-model-badge">${getModelBadge(turn.llm_model)}</div>` 
+                : "";
+
             turnEl.innerHTML = `
                 <div class="cv-turn-number">Turn ${i + 1}</div>
                 <div class="cv-ts">${ts}</div>
                 <div class="cv-user">${escAdminHtml(turn.query || "")}</div>
                 <div class="cv-bot ${fbClass}">
+                    ${modelBadge}
                     ${_renderCvAnswer(turn.answer || "")}
                     ${fbPill}
                 </div>`;
@@ -1587,3 +1610,103 @@ function _fmtAdminDate(raw) {
         }
     } catch (_) {}
 }());
+
+
+async function loadLLMPerformance() {
+    const llmLoading = document.getElementById("llmLoading");
+    const llmEmpty = document.getElementById("llmEmpty");
+    const llmTableWrap = document.getElementById("llmTableWrap");
+    const tbody = document.getElementById("llmTableBody");
+    const refreshLlmBtn = document.getElementById("refreshLlmBtn");
+
+    if (llmLoading) llmLoading.style.display = "flex";
+    if (llmEmpty) llmEmpty.style.display = "none";
+    if (llmTableWrap) llmTableWrap.style.display = "none";
+    if (refreshLlmBtn) refreshLlmBtn.classList.add("spinning");
+
+    try {
+        const res = await fetch(`${API}/admin/api/llm-performance`, { credentials: "include" });
+        const data = await res.json();
+        const stats = data.stats || [];
+
+        if (stats.length === 0) {
+            if (llmLoading) llmLoading.style.display = "none";
+            if (llmEmpty) llmEmpty.style.display = "flex";
+            return;
+        }
+
+        // Calculate aggregates for KPI cards
+        let totalChats = 0;
+        let totalLikes = 0;
+        let totalDislikes = 0;
+        
+        tbody.innerHTML = "";
+        stats.forEach(item => {
+            totalChats += item.total_chats || 0;
+            totalLikes += item.likes || 0;
+            totalDislikes += item.dislikes || 0;
+
+            const tr = document.createElement("tr");
+            const rate = item.satisfaction_rate;
+            const rateStr = rate === -1 ? "No feedback" : `${rate.toFixed(1)}%`;
+            
+            let statusText = "No Feedback";
+            let statusColor = "#94a3b8";
+            if (rate !== -1) {
+                if (rate >= 80) {
+                    statusText = "Excellent";
+                    statusColor = "#22c55e";
+                } else if (rate >= 50) {
+                    statusText = "Fair";
+                    statusColor = "#f59e0b";
+                } else {
+                    statusText = "Needs Attention";
+                    statusColor = "#ef4444";
+                }
+            }
+
+            tr.innerHTML = `
+                <td>${getModelBadge(item.model)}</td>
+                <td><strong>${item.total_chats}</strong> responses</td>
+                <td><span style="color:#22c55e;font-weight:600;">+${item.likes}</span></td>
+                <td><span style="color:#ef4444;font-weight:600;">-${item.dislikes}</span></td>
+                <td>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <strong style="color: ${rate === -1 ? '#94a3b8' : '#f1f5f9'};">${rateStr}</strong>
+                        ${rate !== -1 ? `
+                        <div style="width:70px;height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;">
+                            <div style="width:${rate}%;height:100%;background:${statusColor};"></div>
+                        </div>` : ''}
+                    </div>
+                </td>
+                <td><span class="type-badge" style="background:${statusColor}22;color:${statusColor};border-color:${statusColor}44;">${statusText}</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Update KPI values in UI
+        if (document.getElementById("llmTotalChats")) {
+            document.getElementById("llmTotalChats").textContent = totalChats;
+        }
+        if (document.getElementById("llmTotalLikes")) {
+            document.getElementById("llmTotalLikes").textContent = totalLikes;
+        }
+        if (document.getElementById("llmTotalDislikes")) {
+            document.getElementById("llmTotalDislikes").textContent = totalDislikes;
+        }
+        if (document.getElementById("llmAvgSatisfaction")) {
+            const totalFeedbacks = totalLikes + totalDislikes;
+            const avgRate = totalFeedbacks > 0 ? (totalLikes / totalFeedbacks * 100).toFixed(1) + "%" : "—";
+            document.getElementById("llmAvgSatisfaction").textContent = avgRate;
+        }
+
+        if (llmLoading) llmLoading.style.display = "none";
+        if (llmTableWrap) llmTableWrap.style.display = "block";
+    } catch (err) {
+        console.error("Error loading LLM performance stats:", err);
+        if (llmLoading) llmLoading.style.display = "none";
+        if (llmEmpty) llmEmpty.style.display = "flex";
+    } finally {
+        if (refreshLlmBtn) refreshLlmBtn.classList.remove("spinning");
+    }
+}

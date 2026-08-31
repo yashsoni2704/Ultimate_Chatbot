@@ -68,6 +68,7 @@ def ensure_indexes() -> None:
         _col("chat_logs").create_index([("user_id", ASCENDING)])
         _col("chat_logs").create_index([("session_id", ASCENDING)])
         _col("chat_logs").create_index([("created_at", DESCENDING)])
+        _col("chat_logs").create_index([("llm_model", ASCENDING)])
 
         # chat_sessions
         _col("chat_sessions").create_index([("id", ASCENDING)], unique=True)
@@ -95,6 +96,43 @@ def ensure_indexes() -> None:
         _col("dissatisfied_users").create_index([("visitor_id", ASCENDING)], unique=True)
         _col("dissatisfied_users").create_index([("status", ASCENDING)])
         _col("dissatisfied_users").create_index([("created_at", DESCENDING)])
+
+        # Update existing records to default models or system tags based on response type
+        from config import Config
+        if Config.LLM_PROVIDER == "google":
+            default_rag_model = f"Google: {Config.GOOGLE_LLM_MODEL}"
+        else:
+            default_rag_model = f"Ollama: {Config.LLM_MODEL}"
+
+        # Force correct tags for non-RAG response types (corrections for legacy mismatches)
+        _col("chat_logs").update_many(
+            {"response_type": "smalltalk"},
+            {"$set": {"llm_model": "System (Smalltalk)"}}
+        )
+        _col("chat_logs").update_many(
+            {"response_type": "faq"},
+            {"$set": {"llm_model": "System (FAQ)"}}
+        )
+        _col("chat_logs").update_many(
+            {"response_type": "voice_input"},
+            {"$set": {"llm_model": "N/A"}}
+        )
+
+        # Update remaining RAG records that don't have a model
+        _col("chat_logs").update_many(
+            {"response_type": "rag", "$or": [{"llm_model": {"$exists": False}}, {"llm_model": ""}]},
+            {"$set": {"llm_model": default_rag_model}}
+        )
+
+        # Catch-all
+        _col("chat_logs").update_many(
+            {"llm_model": {"$exists": False}},
+            {"$set": {"llm_model": "N/A"}}
+        )
+        _col("chat_logs").update_many(
+            {"llm_model": ""},
+            {"$set": {"llm_model": "N/A"}}
+        )
 
         logger.info(" MongoDB indexes ensured")
     except Exception as exc:
@@ -237,8 +275,24 @@ def save_chat_log(
     response_type: str  = "rag",       # "rag" | "faq" | "smalltalk"
     source_doc:    str  = "",          # which document answered this
     found:         int  = 1,
+    llm_model:     str  = "",
 ) -> str:
     """Persist one Q&A turn. Returns the new document id."""
+    if response_type == "rag" and not llm_model:
+        from config import Config
+        if Config.LLM_PROVIDER == "google":
+            llm_model = f"Google: {Config.GOOGLE_LLM_MODEL}"
+        else:
+            llm_model = f"Ollama: {Config.LLM_MODEL}"
+    elif response_type == "smalltalk":
+        llm_model = "System (Smalltalk)"
+    elif response_type == "faq":
+        llm_model = "System (FAQ)"
+    elif response_type == "voice_input":
+        llm_model = "N/A"
+    elif not llm_model:
+        llm_model = "N/A"
+
     doc_id = _new_id()
     doc = {
         "id":            doc_id,
@@ -252,6 +306,7 @@ def save_chat_log(
         "response_type": response_type,
         "source_doc":    source_doc,
         "found":         found,
+        "llm_model":     llm_model,
         "created_at":    _now(),
     }
     _col("chat_logs").insert_one(doc)
@@ -643,3 +698,71 @@ def get_visitor_chat_history(visitor_id: str, limit: int = 200) -> list[dict]:
     for log in logs:
         log["feedback"] = feedbacks.get(log["id"])   # "like" | "dislike" | None
     return logs
+
+
+def get_llm_performance_stats() -> list[dict]:
+    """
+    Calculate aggregate satisfaction statistics for each LLM model.
+    Joins chat_logs and chat_feedback to find likes and dislikes per model.
+    """
+    db = get_db()
+    pipeline = [
+        {
+            "$match": {
+                "llm_model": {"$ne": ""}
+            }
+        },
+        {
+            "$lookup": {
+                "from": "chat_feedback",
+                "localField": "id",
+                "foreignField": "chat_log_id",
+                "as": "feedback"
+            }
+        },
+        {
+            "$project": {
+                "llm_model": 1,
+                "feedback": {"$arrayElemAt": ["$feedback.feedback", 0]}
+            }
+        },
+        {
+            "$group": {
+                "_id": "$llm_model",
+                "total_chats": {"$sum": 1},
+                "likes": {
+                    "$sum": {"$cond": [{"$eq": ["$feedback", "like"]}, 1, 0]}
+                },
+                "dislikes": {
+                    "$sum": {"$cond": [{"$eq": ["$feedback", "dislike"]}, 1, 0]}
+                }
+            }
+        },
+        {
+            "$project": {
+                "model": "$_id",
+                "total_chats": 1,
+                "likes": 1,
+                "dislikes": 1,
+                "satisfaction_rate": {
+                    "$cond": [
+                        {"$gt": [{"$add": ["$likes", "$dislikes"]}, 0]},
+                        {"$multiply": [
+                            {"$divide": ["$likes", {"$add": ["$likes", "$dislikes"]}]},
+                            100
+                        ]},
+                        -1
+                    ]
+                },
+                "_id": 0
+            }
+        },
+        {
+            "$sort": {"total_chats": -1}
+        }
+    ]
+    try:
+        return list(db["chat_logs"].aggregate(pipeline))
+    except Exception as exc:
+        logger.error(f"Failed to calculate LLM performance stats: {exc}")
+        return []
